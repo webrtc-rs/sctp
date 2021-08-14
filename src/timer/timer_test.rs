@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::sync::{mpsc, Mutex};
+use tokio::task::yield_now;
 use tokio::time::{sleep, Duration};
 
 ///////////////////////////////////////////////////////////////////
@@ -220,12 +221,16 @@ mod test_rtx_timer {
         assert!(!rt.is_running().await, "should not be running");
 
         // since := time.Now()
-        let ok = rt.start(30).await;
-        assert!(ok, "should be true");
+        let jh = rt.start(30).await;
+        assert!(jh.is_some(), "should be true");
         assert!(rt.is_running().await, "should be running");
 
         sleep(Duration::from_millis(650)).await;
+        yield_now().await;
         rt.stop().await;
+
+        jh.unwrap().await?;
+
         assert!(!rt.is_running().await, "should not be running");
 
         assert_eq!(4, ncbs.load(Ordering::SeqCst), "should be called 4 times");
@@ -245,15 +250,20 @@ mod test_rtx_timer {
         let rt = RtxTimer::new(obs, timer_id, PATH_MAX_RETRANS);
 
         let interval = 30;
-        let ok = rt.start(interval).await;
-        assert!(ok, "should be accepted");
-        let ok = rt.start(interval * 99).await; // should ignored
-        assert!(!ok, "should be ignored");
-        let ok = rt.start(interval * 99).await; // should ignored
-        assert!(!ok, "should be ignored");
+        let jh = rt.start(interval).await;
+        assert!(jh.is_some(), "should be accepted");
+        let jh2 = rt.start(interval * 99).await; // should ignored
+        assert!(jh2.is_none(), "should be ignored");
+        let jh3 = rt.start(interval * 99).await; // should ignored
+        assert!(jh3.is_none(), "should be ignored");
 
         sleep(Duration::from_millis((interval * 3) / 2)).await;
+
+        yield_now().await;
+
         rt.stop().await;
+
+        jh.unwrap().await?;
 
         assert!(!rt.is_running().await, "should not be running");
         assert_eq!(1, ncbs.load(Ordering::SeqCst), "must be called once");
@@ -273,9 +283,11 @@ mod test_rtx_timer {
         let rt = RtxTimer::new(obs, timer_id, PATH_MAX_RETRANS);
 
         let interval = 30;
-        let ok = rt.start(interval).await;
-        assert!(ok, "should be accepted");
+        let jh = rt.start(interval).await;
+        assert!(jh.is_some(), "should be accepted");
         rt.stop().await;
+
+        jh.unwrap().await?;
 
         sleep(Duration::from_millis((interval * 3) / 2)).await;
         rt.stop().await;
@@ -298,16 +310,24 @@ mod test_rtx_timer {
         let rt = RtxTimer::new(obs, timer_id, PATH_MAX_RETRANS);
 
         let interval = 30;
-        let ok = rt.start(interval).await;
-        assert!(ok, "should be accepted");
+        let jh = rt.start(interval).await;
+        assert!(jh.is_some(), "should be accepted");
         rt.stop().await;
+
+        jh.unwrap().await?;
+
         assert!(!rt.is_running().await, "should NOT be running");
-        let ok = rt.start(interval).await;
-        assert!(ok, "should be accepted");
+        let jh2 = rt.start(interval).await;
+        assert!(jh2.is_some(), "should be accepted");
         assert!(rt.is_running().await, "should be running");
 
         sleep(Duration::from_millis((interval * 3) / 2)).await;
+
+        yield_now().await;
+
         rt.stop().await;
+
+        jh2.unwrap().await?;
 
         assert!(!rt.is_running().await, "should NOT be running");
         assert_eq!(1, ncbs.load(Ordering::SeqCst), "must be called once");
@@ -327,10 +347,11 @@ mod test_rtx_timer {
         let rt = RtxTimer::new(obs, timer_id, PATH_MAX_RETRANS);
 
         for _ in 0..1000 {
-            let ok = rt.start(30).await;
-            assert!(ok, "should be accepted");
+            let jh = rt.start(30).await;
+            assert!(jh.is_some(), "should be accepted");
             assert!(rt.is_running().await, "should be running");
             rt.stop().await;
+            jh.unwrap().await?;
             assert!(!rt.is_running().await, "should NOT be running");
         }
 
@@ -339,7 +360,7 @@ mod test_rtx_timer {
         Ok(())
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_rtx_timer_should_stop_after_rtx_failure() -> Result<()> {
         let (done_tx, mut done_rx) = mpsc::channel(1);
 
@@ -364,11 +385,17 @@ mod test_rtx_timer {
         // 320         630    Failure
 
         let interval = 10;
-        let ok = rt.start(interval).await;
-        assert!(ok, "should be accepted");
+        let jh = rt.start(interval).await;
+        assert!(jh.is_some(), "should be accepted");
         assert!(rt.is_running().await, "should be running");
 
-        let elapsed = done_rx.recv().await;
+        let fut = done_rx.recv();
+
+        yield_now().await;
+
+        let elapsed = fut.await;
+
+        jh.unwrap().await?;
 
         assert!(!rt.is_running().await, "should not be running");
         assert_eq!(5, ncbs.load(Ordering::SeqCst), "should be called 5 times");
@@ -377,18 +404,20 @@ mod test_rtx_timer {
             let diff = elapsed.duration_since(since).unwrap();
             assert!(
                 diff > Duration::from_millis(600),
-                "must have taken more than 600 msec"
+                "must have taken more than 600 msec: {:?}",
+                diff
             );
             assert!(
                 diff < Duration::from_millis(700),
-                "must fail in less than 700 msec"
+                "must fail in less than 700 msec: {:?}",
+                diff
             );
         }
 
         Ok(())
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_rtx_timer_should_not_stop_if_max_retrans_is_zero() -> Result<()> {
         let (done_tx, mut done_rx) = mpsc::channel(1);
 
@@ -415,11 +444,15 @@ mod test_rtx_timer {
         // 320         630    6th RTO => exit test (timer should still be running)
 
         let interval = 10;
-        let ok = rt.start(interval).await;
-        assert!(ok, "should be accepted");
+        let jh = rt.start(interval).await;
+        assert!(jh.is_some(), "should be accepted");
         assert!(rt.is_running().await, "should be running");
 
-        let elapsed = done_rx.recv().await;
+        let fut = done_rx.recv();
+
+        yield_now().await;
+
+        let elapsed = fut.await;
 
         assert!(rt.is_running().await, "should still be running");
         assert_eq!(6, ncbs.load(Ordering::SeqCst), "should be called 6 times");
@@ -428,11 +461,13 @@ mod test_rtx_timer {
             let diff = elapsed.duration_since(since).unwrap();
             assert!(
                 diff > Duration::from_millis(600),
-                "must have taken more than 600 msec"
+                "must have taken more than 600 msec: {:?}",
+                diff
             );
             assert!(
                 diff < Duration::from_millis(700),
-                "must fail in less than 700 msec"
+                "must fail in less than 700 msec: {:?}",
+                diff
             );
         }
 
@@ -458,12 +493,15 @@ mod test_rtx_timer {
             rt.stop().await;
         }
 
-        let ok = rt.start(20).await;
-        assert!(ok, "should be accepted");
+        let jh = rt.start(20).await;
+        assert!(jh.is_some(), "should be accepted");
         assert!(rt.is_running().await, "must be running");
 
         let _ = done_rx.recv().await;
         rt.stop().await;
+
+        jh.unwrap().await?;
+
         assert!(!rt.is_running().await, "must be false");
 
         Ok(())
@@ -480,11 +518,14 @@ mod test_rtx_timer {
         }));
         let rt = RtxTimer::new(obs, timer_id, PATH_MAX_RETRANS);
 
-        let ok = rt.start(20).await;
-        assert!(ok, "should be accepted");
+        let jh = rt.start(20).await;
+        assert!(jh.is_some(), "should be accepted");
         assert!(rt.is_running().await, "must be running");
 
         rt.stop().await;
+
+        jh.unwrap().await?;
+
         assert!(!rt.is_running().await, "must be false");
 
         //let ok = rt.start(obs.clone(), 20).await;
