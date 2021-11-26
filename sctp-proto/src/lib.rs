@@ -21,4 +21,5 @@ pub mod packet;
 pub mod param;
 pub mod stream;
 
+pub(crate) mod timer;
 pub(crate) mod util;
