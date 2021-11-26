@@ -44,7 +44,6 @@ fn test_chunk_type_string() -> Result<()> {
 //chunk_abort_test
 ///////////////////////////////////////////////////////////////////
 use super::chunk_abort::*;
-use crate::cause::*;
 
 #[test]
 fn test_abort_chunk_one_error_cause() -> Result<()> {

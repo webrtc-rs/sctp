@@ -16,7 +16,6 @@
 #![allow(dead_code)]
 
 pub mod association;
-pub mod cause;
 pub mod chunk;
 pub mod config;
 pub mod endpoint;

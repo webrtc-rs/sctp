@@ -1,5 +1,4 @@
 use super::{chunk_header::*, chunk_type::*, *};
-use crate::cause::*;
 
 use bytes::{Bytes, BytesMut};
 use std::fmt;
