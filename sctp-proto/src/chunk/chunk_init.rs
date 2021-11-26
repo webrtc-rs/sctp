@@ -274,7 +274,7 @@ impl Chunk for ChunkInit {
 
 impl ChunkInit {
     pub(crate) fn set_supported_extensions(&mut self) {
-        // TODO RFC5061 https://tools.ietf.org/html/rfc6525#section-5.2
+        // TODO: RFC5061 https://tools.ietf.org/html/rfc6525#section-5.2
         // An implementation supporting this (Supported Extensions Parameter)
         // extension MUST list the ASCONF, the ASCONF-ACK, and the AUTH chunks
         // in its INIT and INIT-ACK parameters.

@@ -15,6 +15,9 @@
 #![warn(rust_2018_idioms)]
 #![allow(dead_code)]
 
+use crate::shared::EcnCodepoint;
+use std::net::{IpAddr, SocketAddr};
+
 pub mod association;
 pub mod chunk;
 pub mod config;
@@ -22,5 +25,22 @@ pub mod endpoint;
 pub mod error;
 pub mod packet;
 pub mod param;
+pub mod shared;
 
 pub(crate) mod util;
+
+/// An outgoing packet
+#[derive(Debug)]
+pub struct Transmit {
+    /// The socket this datagram should be sent to
+    pub destination: SocketAddr,
+    /// Explicit congestion notification bits to set on the packet
+    pub ecn: Option<EcnCodepoint>,
+    /// Contents of the datagram
+    pub contents: Vec<u8>,
+    /// The segment size if this transmission contains multiple datagrams.
+    /// This is `None` if the transmit only contains a single datagram
+    pub segment_size: Option<usize>,
+    /// Optional source IP address for the datagram
+    pub src_ip: Option<IpAddr>,
+}

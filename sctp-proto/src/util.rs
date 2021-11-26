@@ -1,3 +1,5 @@
+use crate::shared::AssociationId;
+
 use bytes::Bytes;
 use crc::{Crc, CRC_32_ISCSI};
 use std::time::Duration;
@@ -24,8 +26,6 @@ fn constant_time_ne(a: &[u8], b: &[u8]) -> u8 {
 pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && constant_time_ne(a, b) == 0
 }
-
-pub type AssociationId = u32;
 
 /// Generates association id for incoming connections
 pub trait AssociationIdGenerator: Send {
