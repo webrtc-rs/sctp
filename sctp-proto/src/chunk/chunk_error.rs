@@ -56,7 +56,7 @@ impl Chunk for ChunkError {
         let header = ChunkHeader::unmarshal(raw)?;
 
         if header.typ != CT_ERROR {
-            return Err(Error::ErrChunkTypeNotCtError);
+            return Err(Error::ErrChunkTypeNotCt);
         }
 
         let mut error_causes = vec![];

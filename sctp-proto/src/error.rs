@@ -23,7 +23,7 @@ pub enum Error {
     #[error("ChunkType is not of type COOKIEECHO")]
     ErrChunkTypeNotCookieEcho,
     #[error("ChunkType is not of type ctError")]
-    ErrChunkTypeNotCtError,
+    ErrChunkTypeNotCt,
     #[error("failed build Error Chunk")]
     ErrBuildErrorChunkFailed,
     #[error("failed to marshal stream")]
@@ -215,7 +215,7 @@ pub enum Error {
     #[error("Invalid SystemTime")]
     ErrInvalidSystemTime,
     #[error("Net Conn read error")]
-    ErrNetConnReadError,
+    ErrNetConnRead,
     #[error("Max Data Channel ID")]
     ErrMaxDataChannelID,
 

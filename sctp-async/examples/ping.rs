@@ -1,4 +1,5 @@
-use sctp_async as sctp;
+fn main() {}
+/*use sctp_async as sctp;
 
 use sctp::association::*;
 use sctp::chunk::chunk_payload_data::PayloadProtocolIdentifier;
@@ -117,3 +118,4 @@ async fn main() -> Result<(), Error> {
 
     Ok(())
 }
+*/

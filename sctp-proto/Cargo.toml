@@ -21,6 +21,7 @@ slab = "0.4"
 thiserror = "1.0.21"
 tinyvec = { version = "1.1", features = ["alloc"] }
 tracing = "0.1.10"
+crc = "2.1.0"
 
 [dev-dependencies]
 assert_matches = "1.1"

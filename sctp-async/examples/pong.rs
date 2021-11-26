@@ -1,3 +1,5 @@
+fn main() {}
+/*
 use sctp_async as sctp;
 
 use sctp::association::*;
@@ -108,3 +110,4 @@ async fn main() -> Result<(), Error> {
 
     Ok(())
 }
+*/
