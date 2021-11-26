@@ -1,16 +1,19 @@
-use webrtc_sctp::association::*;
-use webrtc_sctp::chunk::chunk_payload_data::PayloadProtocolIdentifier;
-use webrtc_sctp::stream::*;
-use webrtc_sctp::Error;
+use sctp_async as sctp;
+
+use sctp::association::*;
+use sctp::stream::*;
+use sctp::Error;
 
 use bytes::Bytes;
 use clap::{App, AppSettings, Arg};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::net::UdpSocket;
 use tokio::signal;
 use tokio::sync::mpsc;
+use util::{conn::conn_disconnected_packet::DisconnectedPacketConn, Conn};
 
-// RUST_LOG=trace cargo run --color=always --package webrtc-sctp --example ping -- --server 0.0.0.0:5678
+// RUST_LOG=trace cargo run --color=always --package webrtc-sctp --example pong -- --host 0.0.0.0:5678
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
@@ -29,10 +32,10 @@ async fn main() -> Result<(), Error> {
     .filter(None, log::LevelFilter::Trace)
     .init();*/
 
-    let mut app = App::new("SCTP Ping")
+    let mut app = App::new("SCTP Pong")
         .version("0.1.0")
         .author("Rain Liu <yliu@webrtc.rs>")
-        .about("An example of SCTP Client")
+        .about("An example of SCTP Server")
         .setting(AppSettings::DeriveDisplayOrder)
         .setting(AppSettings::SubcommandsNegateReqs)
         .arg(
@@ -41,11 +44,11 @@ async fn main() -> Result<(), Error> {
                 .long("fullhelp"),
         )
         .arg(
-            Arg::with_name("server")
+            Arg::with_name("host")
                 .required_unless("FULLHELP")
                 .takes_value(true)
-                .long("server")
-                .help("SCTP Server name."),
+                .long("host")
+                .help("SCTP host name."),
         );
 
     let matches = app.clone().get_matches();
@@ -55,53 +58,43 @@ async fn main() -> Result<(), Error> {
         std::process::exit(0);
     }
 
-    let server = matches.value_of("server").unwrap();
-
-    let conn = Arc::new(UdpSocket::bind("0.0.0.0:0").await.unwrap());
-    conn.connect(server).await.unwrap();
-    println!("connecting {}..", server);
+    let host = matches.value_of("host").unwrap();
+    let conn = DisconnectedPacketConn::new(Arc::new(UdpSocket::bind(host).await.unwrap()));
+    println!("listening {}...", conn.local_addr().await.unwrap());
 
     let config = Config {
-        net_conn: conn,
+        net_conn: Arc::new(conn),
         max_receive_buffer_size: 0,
         max_message_size: 0,
-        name: "client".to_owned(),
+        name: "server".to_owned(),
     };
-    let a = Association::client(config).await?;
-    println!("created a client");
+    let a = Association::server(config).await?;
+    println!("created a server");
 
-    let stream = a.open_stream(0, PayloadProtocolIdentifier::String).await?;
-    println!("opened a stream");
+    let stream = a.accept_stream().await.unwrap();
+    println!("accepted a stream");
 
     // set unordered = true and 10ms treshold for dropping packets
     stream.set_reliability_params(true, ReliabilityType::Timed, 10);
 
-    let stream_tx = Arc::clone(&stream);
-    tokio::spawn(async move {
-        let mut ping_seq_num = 0;
-        while ping_seq_num < 10 {
-            let ping_msg = format!("ping {}", ping_seq_num);
-            println!("sent: {}", ping_msg);
-            stream_tx.write(&Bytes::from(ping_msg)).await?;
-
-            ping_seq_num += 1;
-        }
-
-        println!("finished send ping");
-        Result::<(), Error>::Ok(())
-    });
-
     let (done_tx, mut done_rx) = mpsc::channel::<()>(1);
-    let stream_rx = Arc::clone(&stream);
+    let stream2 = Arc::clone(&stream);
     tokio::spawn(async move {
         let mut buff = vec![0u8; 1024];
-        while let Ok(n) = stream_rx.read(&mut buff).await {
-            let pong_msg = String::from_utf8(buff[..n].to_vec()).unwrap();
-            println!("received: {}", pong_msg);
-        }
+        while let Ok(n) = stream2.read(&mut buff).await {
+            let ping_msg = String::from_utf8(buff[..n].to_vec()).unwrap();
+            println!("received: {}", ping_msg);
 
-        println!("finished recv pong");
+            let pong_msg = format!("pong [{}]", ping_msg);
+            println!("sent: {}", pong_msg);
+            stream2.write(&Bytes::from(pong_msg)).await?;
+
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+        println!("finished ping-pong");
         drop(done_tx);
+
+        Result::<(), Error>::Ok(())
     });
 
     println!("Waiting for Ctrl-C...");

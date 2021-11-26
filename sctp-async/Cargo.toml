@@ -1,0 +1,41 @@
+[package]
+name = "sctp-async"
+version = "0.0.0"
+authors = ["Rain Liu <yliu@webrtc.rs>"]
+edition = "2018"
+description = "Async implementation for the SCTP protocol"
+license = "MIT/Apache-2.0"
+documentation = "https://docs.rs/sctp-async"
+homepage = "https://webrtc.rs"
+repository = "https://github.com/webrtc-rs/sctp"
+keywords = ["sctp"]
+categories = [ "network-programming", "asynchronous" ]
+workspace = ".."
+readme = "../README.md"
+
+[dependencies]
+util = { package = "webrtc-util", version = "0.5.2", default-features = false, features = ["conn"] }
+tokio = { version = "1.13.0", features = ["full"] }
+bytes = "1.1.0"
+rand = "0.8.4"
+crc = "2.1.0"
+async-trait = "0.1.51"
+log = "0.4.14"
+thiserror = "1.0.30"
+
+[dev-dependencies]
+tokio-test = "0.4.2"
+lazy_static = "1.4.0"
+env_logger = "0.9.0"
+chrono = "0.4.19"
+clap = "2.33.3"
+
+[[example]]
+name = "ping"
+path = "examples/ping.rs"
+bench = false
+
+[[example]]
+name = "pong"
+path = "examples/pong.rs"
+bench = false
