@@ -7,8 +7,10 @@
 //! The sctp-proto API might be of interest if you want to use it from a C or C++ project
 //! through C bindings or if you want to use a different event loop than the one tokio provides.
 //!
-//! The most important type is `Association`, which contains the bulk of the protocol logic related to
-//! managing an association and all the related state (such as streams).
+//! The most important types are `Endpoint`, which conceptually represents the protocol state for
+//! a single socket and mostly manages configuration and dispatches incoming datagrams to the
+//! related `Association`. `Association` types contain the bulk of the protocol logic related to
+//! managing a single association and all the related state (such as streams).
 
 #![warn(rust_2018_idioms)]
 #![allow(dead_code)]
@@ -16,10 +18,10 @@
 pub mod association;
 pub mod cause;
 pub mod chunk;
+pub mod config;
+pub mod endpoint;
 pub mod error;
 pub mod packet;
 pub mod param;
-pub mod stream;
 
-pub(crate) mod timer;
 pub(crate) mod util;

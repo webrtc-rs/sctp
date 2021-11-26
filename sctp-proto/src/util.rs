@@ -1,5 +1,76 @@
 use bytes::Bytes;
 use crc::{Crc, CRC_32_ISCSI};
+use std::time::Duration;
+
+/// This function is non-inline to prevent the optimizer from looking inside it.
+#[inline(never)]
+fn constant_time_ne(a: &[u8], b: &[u8]) -> u8 {
+    assert!(a.len() == b.len());
+
+    // These useless slices make the optimizer elide the bounds checks.
+    // See the comment in clone_from_slice() added on Rust commit 6a7bc47.
+    let len = a.len();
+    let a = &a[..len];
+    let b = &b[..len];
+
+    let mut tmp = 0;
+    for i in 0..len {
+        tmp |= a[i] ^ b[i];
+    }
+    tmp // The compare with 0 must happen outside this function.
+}
+
+/// Compares byte strings in constant time.
+pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && constant_time_ne(a, b) == 0
+}
+
+pub type AssociationId = u32;
+
+/// Generates association id for incoming connections
+pub trait AssociationIdGenerator: Send {
+    /// Generates a new AID
+    ///
+    /// Association IDs MUST NOT contain any information that can be used by
+    /// an external observer (that is, one that does not cooperate with the
+    /// issuer) to correlate them with other Association IDs for the same
+    /// Association.
+    fn generate_aid(&mut self) -> AssociationId;
+
+    /// Returns the lifetime of generated Association IDs
+    ///
+    /// Association IDs will be retired after the returned `Duration`, if any. Assumed to be constant.
+    fn aid_lifetime(&self) -> Option<Duration>;
+}
+
+/// Generates purely random Association IDs of a certain length
+#[derive(Default, Debug, Clone, Copy)]
+pub struct RandomAssociationIdGenerator {
+    lifetime: Option<Duration>,
+}
+
+impl RandomAssociationIdGenerator {
+    /// Initialize Random AID generator
+    pub fn new() -> Self {
+        RandomAssociationIdGenerator::default()
+    }
+
+    /// Set the lifetime of CIDs created by this generator
+    pub fn set_lifetime(&mut self, d: Duration) -> &mut Self {
+        self.lifetime = Some(d);
+        self
+    }
+}
+
+impl AssociationIdGenerator for RandomAssociationIdGenerator {
+    fn generate_aid(&mut self) -> AssociationId {
+        rand::random::<u32>()
+    }
+
+    fn aid_lifetime(&self) -> Option<Duration> {
+        self.lifetime
+    }
+}
 
 const PADDING_MULTIPLE: usize = 4;
 

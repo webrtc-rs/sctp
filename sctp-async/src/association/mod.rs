@@ -186,15 +186,6 @@ impl fmt::Display for AckState {
     }
 }
 
-/// Config collects the arguments to create_association construction into
-/// a single structure
-pub struct Config {
-    pub net_conn: Arc<dyn Conn + Send + Sync>,
-    pub max_receive_buffer_size: u32,
-    pub max_message_size: u32,
-    pub name: String,
-}
-
 ///Association represents an SCTP association
 ///13.2.  Parameters Necessary per Association (i.e., the TCB)
 ///Peer : Tag value to be sent in every packet and is received
