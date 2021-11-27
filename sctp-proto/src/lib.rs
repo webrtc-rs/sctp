@@ -14,6 +14,7 @@
 
 #![warn(rust_2018_idioms)]
 #![allow(dead_code)]
+#![allow(clippy::too_many_arguments)]
 
 use crate::shared::EcnCodepoint;
 use std::net::{IpAddr, SocketAddr};

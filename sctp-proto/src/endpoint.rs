@@ -1,24 +1,28 @@
 use std::{
     collections::{HashMap, VecDeque},
-    //fmt, iter,
-    net::SocketAddr, //IpAddr
+    iter,
+    //fmt,
+    net::{IpAddr, SocketAddr},
     ops::{Index, IndexMut},
     sync::Arc,
-    //time::{Instant, SystemTime},
+    time::Instant, //, SystemTime},
 };
 
-use crate::config::{EndpointConfig, ServerConfig};
-use crate::shared::{AssociationEvent, AssociationId};
-use crate::util::AssociationIdGenerator;
-use crate::Transmit;
-
-//use bytes::{BufMut, Bytes, BytesMut};
 use crate::association::Association;
+use crate::config::{ClientConfig, EndpointConfig, ServerConfig, TransportConfig};
+use crate::shared::{
+    AssociationEvent, AssociationEventInner, AssociationId, EndpointEvent, EndpointEventInner,
+    IssuedAid,
+};
+use crate::util::{AssociationIdGenerator, RandomAssociationIdGenerator};
+use crate::{EcnCodepoint, Transmit};
+
+use bytes::{BufMut, Bytes, BytesMut};
 use fxhash::FxHashMap;
-use rand::rngs::StdRng; //, Rng, RngCore, SeedableRng};
+use rand::{rngs::StdRng, /*Rng, RngCore,*/ SeedableRng};
 use slab::Slab;
 use thiserror::Error;
-//use tracing::{debug, trace, warn};
+use tracing::{debug, trace, warn};
 
 /// The main entry point to the library
 ///
@@ -53,6 +57,389 @@ pub struct Endpoint {
     ///
     /// Equivalent to a `ServerConfig.accept_buffer` of `0`, but can be changed after the endpoint is constructed.
     reject_new_connections: bool,
+}
+
+impl Endpoint {
+    /// Create a new endpoint
+    ///
+    /// Returns `Err` if the configuration is invalid.
+    pub fn new(config: Arc<EndpointConfig>, server_config: Option<Arc<ServerConfig>>) -> Self {
+        Self {
+            rng: StdRng::from_entropy(),
+            transmits: VecDeque::new(),
+            connection_ids_initial: HashMap::default(),
+            connection_ids: FxHashMap::default(),
+            connection_remotes: HashMap::default(),
+            //TODO: connection_reset_tokens: ResetTokenTable::default(),
+            connections: Slab::new(),
+            local_cid_generator: (config.aid_generator_factory.as_ref())(),
+            reject_new_connections: false,
+            config,
+            server_config,
+        }
+    }
+
+    /// Get the next packet to transmit
+    #[must_use]
+    pub fn poll_transmit(&mut self) -> Option<Transmit> {
+        self.transmits.pop_front()
+    }
+
+    /// Replace the server configuration, affecting new incoming associations only
+    pub fn set_server_config(&mut self, server_config: Option<Arc<ServerConfig>>) {
+        self.server_config = server_config;
+    }
+
+    /// Process `EndpointEvent`s emitted from related `Connection`s
+    ///
+    /// In turn, processing this event may return a `ConnectionEvent` for the same `Connection`.
+    pub fn handle_event(
+        &mut self,
+        ch: AssociationHandle,
+        event: EndpointEvent,
+    ) -> Option<AssociationEvent> {
+        use EndpointEventInner::*;
+        match event.0 {
+            NeedIdentifiers(now, n) => {
+                return Some(self.send_new_identifiers(now, ch, n));
+            }
+            /*TODO: ResetToken(remote, token) => {
+                if let Some(old) = self.connections[ch].reset_token.replace((remote, token)) {
+                    self.connection_reset_tokens.remove(old.0, old.1);
+                }
+                if self.connection_reset_tokens.insert(remote, token, ch) {
+                    warn!("duplicate reset token");
+                }
+            }*/
+            RetireAssociationId(now, seq, allow_more_aids) => {
+                if let Some(cid) = self.connections[ch].loc_cids.remove(&seq) {
+                    trace!("peer retired AID {}: {}", seq, cid);
+                    self.connection_ids.remove(&cid);
+                    if allow_more_aids {
+                        return Some(self.send_new_identifiers(now, ch, 1));
+                    }
+                }
+            }
+            Drained => {
+                let conn = self.connections.remove(ch.0);
+                self.connection_ids_initial.remove(&conn.init_cid);
+                for cid in conn.loc_cids.values() {
+                    self.connection_ids.remove(cid);
+                }
+                self.connection_remotes.remove(&conn.initial_remote);
+                /*TODO: if let Some((remote, token)) = conn.reset_token {
+                    self.connection_reset_tokens.remove(remote, token);
+                }*/
+            }
+        }
+        None
+    }
+
+    /// Process an incoming UDP datagram
+    pub fn handle(
+        &mut self,
+        now: Instant,
+        remote: SocketAddr,
+        local_ip: Option<IpAddr>,
+        ecn: Option<EcnCodepoint>,
+        data: BytesMut,
+    ) -> Option<(AssociationHandle, DatagramEvent)> {
+        /*let datagram_len = data.len();
+        let (first_decode, remaining) = match PartialDecode::new(
+            data,
+            self.local_cid_generator.cid_len(),
+            &self.config.supported_versions,
+        ) {
+            Ok(x) => x,
+            Err(PacketDecodeError::UnsupportedVersion {
+                src_cid,
+                dst_cid,
+                version,
+            }) => {
+                if self.server_config.is_none() {
+                    debug!("dropping packet with unsupported version");
+                    return None;
+                }
+                trace!("sending version negotiation");
+                // Negotiate versions
+                let mut buf = Vec::<u8>::new();
+                Header::VersionNegotiate {
+                    random: self.rng.gen::<u8>() | 0x40,
+                    src_cid: dst_cid,
+                    dst_cid: src_cid,
+                }
+                .encode(&mut buf);
+                // Grease with a reserved version
+                if version != 0x0a1a_2a3a {
+                    buf.write::<u32>(0x0a1a_2a3a);
+                } else {
+                    buf.write::<u32>(0x0a1a_2a4a);
+                }
+                for &version in &self.config.supported_versions {
+                    buf.write(version);
+                }
+                self.transmits.push_back(Transmit {
+                    destination: remote,
+                    ecn: None,
+                    contents: buf,
+                    segment_size: None,
+                    src_ip: local_ip,
+                });
+                return None;
+            }
+            Err(e) => {
+                trace!("malformed header: {}", e);
+                return None;
+            }
+        };
+
+        //
+        // Handle packet on existing connection, if any
+        //
+
+        let dst_cid = first_decode.dst_cid();
+        let known_ch = {
+            let ch = if self.local_cid_generator.cid_len() > 0 {
+                self.connection_ids.get(&dst_cid)
+            } else {
+                None
+            };
+            ch.or_else(|| {
+                if first_decode.is_initial() || first_decode.is_0rtt() {
+                    self.connection_ids_initial.get(&dst_cid)
+                } else {
+                    None
+                }
+            })
+            .or_else(|| {
+                if self.local_cid_generator.cid_len() == 0 {
+                    self.connection_remotes.get(&remote)
+                } else {
+                    None
+                }
+            })
+            .or_else(|| {
+                let data = first_decode.data();
+                if data.len() < RESET_TOKEN_SIZE {
+                    return None;
+                }
+                self.connection_reset_tokens
+                    .get(remote, &data[data.len() - RESET_TOKEN_SIZE..])
+            })
+            .cloned()
+        };
+        if let Some(ch) = known_ch {
+            return Some((
+                ch,
+                DatagramEvent::ConnectionEvent(ConnectionEvent(ConnectionEventInner::Datagram {
+                    now,
+                    remote,
+                    ecn,
+                    first_decode,
+                    remaining,
+                })),
+            ));
+        }
+
+        //
+        // Potentially create a new connection
+        //
+
+        let server_config = match &self.server_config {
+            Some(config) => config,
+            None => {
+                debug!("packet for unrecognized connection {}", dst_cid);
+                self.stateless_reset(datagram_len, remote, local_ip, &dst_cid);
+                return None;
+            }
+        };
+
+        if let Some(version) = first_decode.initial_version() {
+            if datagram_len < MIN_INITIAL_SIZE as usize {
+                debug!("ignoring short initial for connection {}", dst_cid);
+                return None;
+            }
+
+            let crypto = match server_config
+                .crypto
+                .initial_keys(version, &dst_cid, Side::Server)
+            {
+                Ok(keys) => keys,
+                Err(UnsupportedVersion) => {
+                    // This probably indicates that the user set supported_versions incorrectly in
+                    // `EndpointConfig`.
+                    debug!(
+                        "ignoring initial packet version {:#x} unsupported by cryptographic layer",
+                        version
+                    );
+                    return None;
+                }
+            };
+            return match first_decode.finish(Some(&*crypto.header.remote)) {
+                Ok(packet) => self
+                    .handle_first_packet(now, remote, local_ip, ecn, packet, remaining, &crypto)
+                    .map(|(ch, conn)| (ch, DatagramEvent::NewConnection(conn))),
+                Err(e) => {
+                    trace!("unable to decode initial packet: {}", e);
+                    None
+                }
+            };
+        } else if first_decode.has_long_header() {
+            debug!(
+                "ignoring non-initial packet for unknown connection {}",
+                dst_cid
+            );
+            return None;
+        }
+
+        //
+        // If we got this far, we're a server receiving a seemingly valid packet for an unknown
+        // connection. Send a stateless reset.
+        //
+
+        if !dst_cid.is_empty() {
+            self.stateless_reset(datagram_len, remote, local_ip, &dst_cid);
+        } else {
+            trace!("dropping unrecognized short packet without ID");
+        }*/
+        None
+    }
+
+    /// Initiate a Association
+    pub fn connect(
+        &mut self,
+        config: ClientConfig,
+        remote: SocketAddr,
+        server_name: &str,
+    ) -> Result<(AssociationHandle, Association), ConnectError> {
+        if self.is_full() {
+            return Err(ConnectError::TooManyAssociations);
+        }
+        if remote.port() == 0 {
+            return Err(ConnectError::InvalidRemoteAddress(remote));
+        }
+
+        let remote_id = RandomAssociationIdGenerator::new().generate_aid();
+        trace!(initial_dcid = %remote_id);
+
+        let loc_cid = self.new_aid();
+        /*TODO: let params = TransportParameters::new(
+            &config.transport,
+            &self.config,
+            self.local_cid_generator.as_ref(),
+            loc_cid,
+            None,
+        );
+        let tls = config
+            .crypto
+            .start_session(config.version, server_name, &params)?;*/
+
+        let (ch, conn) = self.add_connection(
+            //config.version,
+            remote_id,
+            loc_cid,
+            remote_id,
+            remote,
+            None,
+            Instant::now(),
+            //tls,
+            None,
+            config.transport,
+        );
+        Ok((ch, conn))
+    }
+
+    fn send_new_identifiers(
+        &mut self,
+        now: Instant,
+        ch: AssociationHandle,
+        num: u64,
+    ) -> AssociationEvent {
+        let mut ids = vec![];
+        for _ in 0..num {
+            let id = self.new_aid();
+            self.connection_ids.insert(id, ch);
+            let meta = &mut self.connections[ch];
+            meta.cids_issued += 1;
+            let sequence = meta.cids_issued;
+            meta.loc_cids.insert(sequence, id);
+            ids.push(IssuedAid {
+                sequence,
+                id,
+                //TODO: reset_token: ResetToken::new(&*self.config.reset_key, &id),
+            });
+        }
+        AssociationEvent(AssociationEventInner::NewIdentifiers(ids, now))
+    }
+
+    fn new_aid(&mut self) -> AssociationId {
+        loop {
+            let aid = self.local_cid_generator.generate_aid();
+            if !self.connection_ids.contains_key(&aid) {
+                break aid;
+            }
+        }
+    }
+
+    fn add_connection(
+        &mut self,
+        //version: u32,
+        init_cid: AssociationId,
+        loc_cid: AssociationId,
+        rem_cid: AssociationId,
+        remote: SocketAddr,
+        local_ip: Option<IpAddr>,
+        now: Instant,
+        //tls: Box<dyn crypto::Session>,
+        server_config: Option<Arc<ServerConfig>>,
+        transport_config: Arc<TransportConfig>,
+    ) -> (AssociationHandle, Association) {
+        let conn = Association::new(
+            server_config,
+            transport_config,
+            init_cid,
+            loc_cid,
+            rem_cid,
+            remote,
+            local_ip,
+            //tls,
+            self.local_cid_generator.as_ref(),
+            now,
+            //version,
+        );
+
+        let id = self.connections.insert(AssociationMeta {
+            init_cid,
+            cids_issued: 0,
+            loc_cids: iter::once((0, loc_cid)).collect(),
+            initial_remote: remote,
+            //reset_token: None,
+        });
+
+        let ch = AssociationHandle(id);
+        //TODO: match self.local_cid_generator.cid_len() {
+        //    0 => self.connection_remotes.insert(remote, ch),
+        //    _ => ,
+        //};
+        self.connection_ids.insert(loc_cid, ch);
+
+        (ch, conn)
+    }
+
+    /// Unconditionally reject future incoming connections
+    pub fn reject_new_connections(&mut self) {
+        self.reject_new_connections = true;
+    }
+
+    /// Access the configuration used by this endpoint
+    pub fn config(&self) -> &EndpointConfig {
+        &self.config
+    }
+
+    /// Whether we've used up 3/4 of the available AID space
+    fn is_full(&self) -> bool {
+        (((u32::MAX >> 1) + (u32::MAX >> 2)) as usize) < self.connection_ids.len()
+    }
 }
 
 #[derive(Debug)]
