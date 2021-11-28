@@ -32,7 +32,9 @@ pub mod error;
 pub mod packet;
 pub mod param;
 pub mod shared;
+pub mod stream;
 
+pub(crate) mod queue;
 pub(crate) mod util;
 
 /// Whether an endpoint was the initiator of a connection

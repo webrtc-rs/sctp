@@ -5,7 +5,8 @@ use crate::association::{
 use crate::chunk::{
     chunk_abort::ChunkAbort, chunk_cookie_ack::ChunkCookieAck, chunk_cookie_echo::ChunkCookieEcho,
     chunk_error::ChunkError, chunk_forward_tsn::ChunkForwardTsn, chunk_heartbeat::ChunkHeartbeat,
-    chunk_init::ChunkInit, chunk_payload_data::ChunkPayloadData, chunk_reconfig::ChunkReconfig,
+    chunk_heartbeat_ack::ChunkHeartbeatAck, chunk_init::ChunkInit,
+    chunk_payload_data::ChunkPayloadData, chunk_reconfig::ChunkReconfig,
     chunk_selective_ack::ChunkSelectiveAck, chunk_shutdown::ChunkShutdown,
     chunk_shutdown_ack::ChunkShutdownAck, chunk_shutdown_complete::ChunkShutdownComplete,
     chunk_type::CT_FORWARD_TSN, Chunk,
@@ -15,16 +16,17 @@ use crate::config::{
 };
 use crate::error::{Error, Result};
 use crate::packet::Packet;
-use crate::param::param_supported_extensions::ParamSupportedExtensions;
 use crate::param::{
+    param_heartbeat_info::ParamHeartbeatInfo,
     param_outgoing_reset_request::ParamOutgoingResetRequest, param_state_cookie::ParamStateCookie,
+    param_supported_extensions::ParamSupportedExtensions,
+};
+use crate::queue::{
+    control_queue::ControlQueue, payload_queue::PayloadQueue, pending_queue::PendingQueue,
 };
 use crate::shared::AssociationId;
 use crate::util::{sna32lt, AssociationIdGenerator};
 use crate::Side;
-
-use crate::chunk::chunk_heartbeat_ack::ChunkHeartbeatAck;
-use crate::param::param_heartbeat_info::ParamHeartbeatInfo;
 use bytes::Bytes;
 use rand::random;
 use std::collections::{HashMap, VecDeque};
@@ -35,7 +37,6 @@ use tracing::{debug, trace, warn};
 
 mod state;
 mod stats;
-mod streams;
 mod timer;
 
 ///Association represents an SCTP association
@@ -65,7 +66,10 @@ pub struct Association {
     bytes_received: usize,
     bytes_sent: usize,
 
-    control_queue: VecDeque<Packet>,
+    payload_queue: PayloadQueue,
+    inflight_queue: PayloadQueue,
+    pending_queue: Arc<PendingQueue>,
+    control_queue: ControlQueue,
 
     peer_verification_tag: u32,
     my_verification_tag: u32,
