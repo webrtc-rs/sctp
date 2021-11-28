@@ -9,7 +9,7 @@ use crate::chunk::{
     chunk_payload_data::ChunkPayloadData, chunk_reconfig::ChunkReconfig,
     chunk_selective_ack::ChunkSelectiveAck, chunk_shutdown::ChunkShutdown,
     chunk_shutdown_ack::ChunkShutdownAck, chunk_shutdown_complete::ChunkShutdownComplete,
-    chunk_type::CT_FORWARD_TSN, Chunk,
+    chunk_type::CT_FORWARD_TSN, Chunk, ErrorCauseUnrecognizedChunkType,
 };
 use crate::config::{
     ServerConfig, TransportConfig, COMMON_HEADER_SIZE, DATA_CHUNK_HEADER_SIZE, INITIAL_MTU,
@@ -19,20 +19,24 @@ use crate::packet::Packet;
 use crate::param::{
     param_heartbeat_info::ParamHeartbeatInfo,
     param_outgoing_reset_request::ParamOutgoingResetRequest, param_state_cookie::ParamStateCookie,
-    param_supported_extensions::ParamSupportedExtensions,
+    param_supported_extensions::ParamSupportedExtensions, Param,
 };
 use crate::queue::{
     control_queue::ControlQueue, payload_queue::PayloadQueue, pending_queue::PendingQueue,
 };
 use crate::shared::AssociationId;
-use crate::util::{sna32lt, AssociationIdGenerator};
+use crate::util::{sna32gt, sna32gte, sna32lt, sna32lte, AssociationIdGenerator};
 use crate::Side;
+
+use crate::association::timer::RtoManager;
+use crate::param::param_reconfig_response::{ParamReconfigResponse, ReconfigResult};
+use crate::stream::Stream;
 use bytes::Bytes;
 use rand::random;
 use std::collections::{HashMap, VecDeque};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Instant, SystemTime};
 use tracing::{debug, trace, warn};
 
 mod state;
@@ -66,11 +70,6 @@ pub struct Association {
     bytes_received: usize,
     bytes_sent: usize,
 
-    payload_queue: PayloadQueue,
-    inflight_queue: PayloadQueue,
-    pending_queue: Arc<PendingQueue>,
-    control_queue: ControlQueue,
-
     peer_verification_tag: u32,
     my_verification_tag: u32,
     my_next_tsn: u32,
@@ -96,16 +95,18 @@ pub struct Association {
     my_max_num_outbound_streams: u16,
     my_cookie: Option<ParamStateCookie>,
 
-    //payload_queue: PayloadQueue,
-    //inflight_queue: PayloadQueue,
-    //pending_queue: Arc<PendingQueue>,
-    //control_queue: ControlQueue,
+    payload_queue: PayloadQueue,
+    inflight_queue: PayloadQueue,
+    pending_queue: Arc<PendingQueue>,
+    control_queue: ControlQueue,
     mtu: u32,
     // max DATA chunk payload size
     max_payload_size: u32,
     cumulative_tsn_ack_point: u32,
     advanced_peer_tsn_ack_point: u32,
     use_forward_tsn: bool,
+
+    rto_mgr: RtoManager,
 
     // Congestion control parameters
     max_receive_buffer_size: u32,
@@ -122,11 +123,10 @@ pub struct Association {
     // Chunks stored for retransmission
     stored_init: Option<ChunkInit>,
     stored_cookie_echo: Option<ChunkCookieEcho>,
-
-    //TODO: streams: HashMap<u16, Arc<Stream>>,
+    streams: HashMap<u16, Arc<Stream>>,
 
     // local error
-    //TODO: silent_error: Option<Error>,
+    silent_error: Option<Error>,
 
     // per inbound packet context
     delayed_ack_triggered: bool,
@@ -178,6 +178,7 @@ impl Association {
             my_max_num_inbound_streams: config.max_num_inbound_streams,
             max_payload_size: INITIAL_MTU - (COMMON_HEADER_SIZE + DATA_CHUNK_HEADER_SIZE),
 
+            rto_mgr: RtoManager::new(),
             mtu,
             cwnd,
             my_verification_tag: random::<u32>(),
@@ -360,11 +361,9 @@ impl Association {
             self.handle_cookie_echo(c)?
         } else if chunk_any.downcast_ref::<ChunkCookieAck>().is_some() {
             self.handle_cookie_ack()?
-        }
-        /*TODO: else if let Some(c) = chunk_any.downcast_ref::<ChunkPayloadData>() {
+        } else if let Some(c) = chunk_any.downcast_ref::<ChunkPayloadData>() {
             self.handle_data(c)?
-        }*/
-        /* else if let Some(c) = chunk_any.downcast_ref::<ChunkSelectiveAck>() {
+        } else if let Some(c) = chunk_any.downcast_ref::<ChunkSelectiveAck>() {
             self.handle_sack(c)?
         } else if let Some(c) = chunk_any.downcast_ref::<ChunkReconfig>() {
             self.handle_reconfig(c)?
@@ -376,8 +375,7 @@ impl Association {
             self.handle_shutdown_ack(c)?
         } else if let Some(c) = chunk_any.downcast_ref::<ChunkShutdownComplete>() {
             self.handle_shutdown_complete(c)?
-        } */
-        else {
+        } else {
             return Err(Error::ErrChunkTypeUnhandled);
         };
 
@@ -657,7 +655,7 @@ impl Association {
         Ok(vec![])
     }
 
-    /*TODO: fn handle_data(&mut self, d: &ChunkPayloadData) -> Result<Vec<Packet>> {
+    fn handle_data(&mut self, d: &ChunkPayloadData) -> Result<Vec<Packet>> {
         trace!(
             "[{}] DATA: tsn={} immediateSack={} len={}",
             self.side,
@@ -701,12 +699,284 @@ impl Association {
         let immediate_sack = d.immediate_sack;
 
         if stream_handle_data {
-            if let Some(s) = self.streams.get_mut(&d.stream_identifier) {
+            /*TODO: if let Some(s) = self.streams.get_mut(&d.stream_identifier) {
                 s.handle_data(d.clone());
-            }
+            }*/
         }
 
         self.handle_peer_last_tsn_and_acknowledgement(immediate_sack)
+    }
+
+    fn handle_sack(&mut self, d: &ChunkSelectiveAck) -> Result<Vec<Packet>> {
+        trace!(
+            "[{}] {}, SACK: cumTSN={} a_rwnd={}",
+            self.side,
+            self.cumulative_tsn_ack_point,
+            d.cumulative_tsn_ack,
+            d.advertised_receiver_window_credit
+        );
+        let state = self.get_state();
+        if state != AssociationState::Established
+            && state != AssociationState::ShutdownPending
+            && state != AssociationState::ShutdownReceived
+        {
+            return Ok(vec![]);
+        }
+
+        self.stats.inc_sacks();
+
+        if sna32gt(self.cumulative_tsn_ack_point, d.cumulative_tsn_ack) {
+            // RFC 4960 sec 6.2.1.  Processing a Received SACK
+            // D)
+            //   i) If Cumulative TSN Ack is less than the Cumulative TSN Ack
+            //      Point, then drop the SACK.  Since Cumulative TSN Ack is
+            //      monotonically increasing, a SACK whose Cumulative TSN Ack is
+            //      less than the Cumulative TSN Ack Point indicates an out-of-
+            //      order SACK.
+
+            debug!(
+                "[{}] SACK Cumulative ACK {} is older than ACK point {}",
+                self.side, d.cumulative_tsn_ack, self.cumulative_tsn_ack_point
+            );
+
+            return Ok(vec![]);
+        }
+
+        // Process selective ack
+        let (bytes_acked_per_stream, htna) = self.process_selective_ack(d)?;
+
+        let mut total_bytes_acked = 0;
+        for n_bytes_acked in bytes_acked_per_stream.values() {
+            total_bytes_acked += *n_bytes_acked;
+        }
+
+        let mut cum_tsn_ack_point_advanced = false;
+        if sna32lt(self.cumulative_tsn_ack_point, d.cumulative_tsn_ack) {
+            trace!(
+                "[{}] SACK: cumTSN advanced: {} -> {}",
+                self.side,
+                self.cumulative_tsn_ack_point,
+                d.cumulative_tsn_ack
+            );
+
+            self.cumulative_tsn_ack_point = d.cumulative_tsn_ack;
+            cum_tsn_ack_point_advanced = true;
+            self.on_cumulative_tsn_ack_point_advanced(total_bytes_acked);
+        }
+
+        for (si, n_bytes_acked) in &bytes_acked_per_stream {
+            /*TODO: if let Some(s) = self.streams.get_mut(si) {
+                s.on_buffer_released(*n_bytes_acked);
+            }*/
+        }
+
+        // New rwnd value
+        // RFC 4960 sec 6.2.1.  Processing a Received SACK
+        // D)
+        //   ii) Set rwnd equal to the newly received a_rwnd minus the number
+        //       of bytes still outstanding after processing the Cumulative
+        //       TSN Ack and the Gap Ack Blocks.
+
+        // bytes acked were already subtracted by markAsAcked() method
+        let bytes_outstanding = self.inflight_queue.get_num_bytes() as u32;
+        if bytes_outstanding >= d.advertised_receiver_window_credit {
+            self.rwnd = 0;
+        } else {
+            self.rwnd = d.advertised_receiver_window_credit - bytes_outstanding;
+        }
+
+        self.process_fast_retransmission(d.cumulative_tsn_ack, htna, cum_tsn_ack_point_advanced)?;
+
+        if self.use_forward_tsn {
+            // RFC 3758 Sec 3.5 C1
+            if sna32lt(
+                self.advanced_peer_tsn_ack_point,
+                self.cumulative_tsn_ack_point,
+            ) {
+                self.advanced_peer_tsn_ack_point = self.cumulative_tsn_ack_point
+            }
+
+            // RFC 3758 Sec 3.5 C2
+            let mut i = self.advanced_peer_tsn_ack_point + 1;
+            while let Some(c) = self.inflight_queue.get(i) {
+                if !c.abandoned() {
+                    break;
+                }
+                self.advanced_peer_tsn_ack_point = i;
+                i += 1;
+            }
+
+            // RFC 3758 Sec 3.5 C3
+            if sna32gt(
+                self.advanced_peer_tsn_ack_point,
+                self.cumulative_tsn_ack_point,
+            ) {
+                self.will_send_forward_tsn = true;
+                debug!(
+                    "[{}] handleSack {}: sna32GT({}, {})",
+                    self.side,
+                    self.will_send_forward_tsn,
+                    self.advanced_peer_tsn_ack_point,
+                    self.cumulative_tsn_ack_point
+                );
+            }
+            //TODO: self.awake_write_loop();
+        }
+
+        self.postprocess_sack(state, cum_tsn_ack_point_advanced);
+
+        Ok(vec![])
+    }
+
+    fn handle_reconfig(&mut self, c: &ChunkReconfig) -> Result<Vec<Packet>> {
+        trace!("[{}] handle_reconfig", self.side);
+
+        let mut pp = vec![];
+
+        if let Some(param_a) = &c.param_a {
+            if let Some(p) = self.handle_reconfig_param(param_a)? {
+                pp.push(p);
+            }
+        }
+
+        if let Some(param_b) = &c.param_b {
+            if let Some(p) = self.handle_reconfig_param(param_b)? {
+                pp.push(p);
+            }
+        }
+
+        Ok(pp)
+    }
+
+    fn handle_forward_tsn(&mut self, c: &ChunkForwardTsn) -> Result<Vec<Packet>> {
+        trace!("[{}] FwdTSN: {}", self.side, c.to_string());
+
+        if !self.use_forward_tsn {
+            warn!("[{}] received FwdTSN but not enabled", self.side);
+            // Return an error chunk
+            let cerr = ChunkError {
+                error_causes: vec![ErrorCauseUnrecognizedChunkType::default()],
+            };
+
+            let outbound = Packet {
+                verification_tag: self.peer_verification_tag,
+                source_port: self.source_port,
+                destination_port: self.destination_port,
+                chunks: vec![Box::new(cerr)],
+            };
+            return Ok(vec![outbound]);
+        }
+
+        // From RFC 3758 Sec 3.6:
+        //   Note, if the "New Cumulative TSN" value carried in the arrived
+        //   FORWARD TSN chunk is found to be behind or at the current cumulative
+        //   TSN point, the data receiver MUST treat this FORWARD TSN as out-of-
+        //   date and MUST NOT update its Cumulative TSN.  The receiver SHOULD
+        //   send a SACK to its peer (the sender of the FORWARD TSN) since such a
+        //   duplicate may indicate the previous SACK was lost in the network.
+
+        trace!(
+            "[{}] should send ack? newCumTSN={} peer_last_tsn={}",
+            self.side,
+            c.new_cumulative_tsn,
+            self.peer_last_tsn
+        );
+        if sna32lte(c.new_cumulative_tsn, self.peer_last_tsn) {
+            trace!("[{}] sending ack on Forward TSN", self.side);
+            self.ack_state = AckState::Immediate;
+            /*TODO: if let Some(ack_timer) = &mut self.ack_timer {
+                ack_timer.stop();
+            }*/
+            //TODO: self.awake_write_loop();
+            return Ok(vec![]);
+        }
+
+        // From RFC 3758 Sec 3.6:
+        //   the receiver MUST perform the same TSN handling, including duplicate
+        //   detection, gap detection, SACK generation, cumulative TSN
+        //   advancement, etc. as defined in RFC 2960 [2]---with the following
+        //   exceptions and additions.
+
+        //   When a FORWARD TSN chunk arrives, the data receiver MUST first update
+        //   its cumulative TSN point to the value carried in the FORWARD TSN
+        //   chunk,
+
+        // Advance peer_last_tsn
+        while sna32lt(self.peer_last_tsn, c.new_cumulative_tsn) {
+            self.payload_queue.pop(self.peer_last_tsn + 1); // may not exist
+            self.peer_last_tsn += 1;
+        }
+
+        // Report new peer_last_tsn value and abandoned largest SSN value to
+        // corresponding streams so that the abandoned chunks can be removed
+        // from the reassemblyQueue.
+        for forwarded in &c.streams {
+            /*TODO: if let Some(s) = self.streams.get_mut(&forwarded.identifier) {
+                s.handle_forward_tsn_for_ordered(forwarded.sequence);
+            }*/
+        }
+
+        // TSN may be forewared for unordered chunks. ForwardTSN chunk does not
+        // report which stream identifier it skipped for unordered chunks.
+        // Therefore, we need to broadcast this event to all existing streams for
+        // unordered chunks.
+        // See https://github.com/pion/sctp/issues/106
+        /*TODO: for s in self.streams.values_mut() {
+            s.handle_forward_tsn_for_unordered(c.new_cumulative_tsn);
+        }*/
+
+        self.handle_peer_last_tsn_and_acknowledgement(false)
+    }
+
+    fn handle_shutdown(&mut self, _: &ChunkShutdown) -> Result<Vec<Packet>> {
+        let state = self.get_state();
+
+        if state == AssociationState::Established {
+            if !self.inflight_queue.is_empty() {
+                self.set_state(AssociationState::ShutdownReceived);
+            } else {
+                // No more outstanding, send shutdown ack.
+                self.will_send_shutdown_ack = true;
+                self.set_state(AssociationState::ShutdownAckSent);
+
+                //TODO: self.awake_write_loop();
+            }
+        } else if state == AssociationState::ShutdownSent {
+            // self.cumulative_tsn_ack_point = c.cumulative_tsn_ack
+
+            self.will_send_shutdown_ack = true;
+            self.set_state(AssociationState::ShutdownAckSent);
+
+            //TODO: self.awake_write_loop();
+        }
+
+        Ok(vec![])
+    }
+
+    fn handle_shutdown_ack(&mut self, _: &ChunkShutdownAck) -> Result<Vec<Packet>> {
+        let state = self.get_state();
+        if state == AssociationState::ShutdownSent || state == AssociationState::ShutdownAckSent {
+            /*TODO: if let Some(t2shutdown) = &self.t2shutdown {
+                t2shutdown.stop().await;
+            }*/
+            self.will_send_shutdown_complete = true;
+
+            //TODO: self.awake_write_loop();
+        }
+
+        Ok(vec![])
+    }
+
+    fn handle_shutdown_complete(&mut self, _: &ChunkShutdownComplete) -> Result<Vec<Packet>> {
+        let state = self.get_state();
+        if state == AssociationState::ShutdownAckSent {
+            /*TODO: if let Some(t2shutdown) = &self.t2shutdown {
+                t2shutdown.stop().await;
+            }*/
+            //TODO: self.close().await?;
+        }
+
+        Ok(vec![])
     }
 
     /// A common routine for handle_data and handle_forward_tsn routines
@@ -763,56 +1033,426 @@ impl Association {
         }
 
         Ok(reply)
-    }*/
+    }
 
-    fn handle_shutdown(&mut self, _: &ChunkShutdown) -> Result<Vec<Packet>> {
-        let state = self.get_state();
-
-        if state == AssociationState::Established {
-            if !self.inflight_queue.is_empty() {
-                self.set_state(AssociationState::ShutdownReceived);
-            } else {
-                // No more outstanding, send shutdown ack.
-                self.will_send_shutdown_ack = true;
-                self.set_state(AssociationState::ShutdownAckSent);
-
-                //TODO: self.awake_write_loop();
+    #[allow(clippy::borrowed_box)]
+    fn handle_reconfig_param(
+        &mut self,
+        raw: &Box<dyn Param + Send + Sync>,
+    ) -> Result<Option<Packet>> {
+        if let Some(p) = raw.as_any().downcast_ref::<ParamOutgoingResetRequest>() {
+            self.reconfig_requests
+                .insert(p.reconfig_request_sequence_number, p.clone());
+            Ok(Some(self.reset_streams_if_any(p)))
+        } else if let Some(p) = raw.as_any().downcast_ref::<ParamReconfigResponse>() {
+            self.reconfigs.remove(&p.reconfig_response_sequence_number);
+            if self.reconfigs.is_empty() {
+                /*TODO: if let Some(treconfig) = &self.treconfig {
+                    treconfig.stop().await;
+                }*/
             }
-        } else if state == AssociationState::ShutdownSent {
-            // self.cumulative_tsn_ack_point = c.cumulative_tsn_ack
+            Ok(None)
+        } else {
+            Err(Error::ErrParamterType)
+        }
+    }
 
+    fn process_selective_ack(&mut self, d: &ChunkSelectiveAck) -> Result<(HashMap<u16, i64>, u32)> {
+        let mut bytes_acked_per_stream = HashMap::new();
+
+        // New ack point, so pop all ACKed packets from inflight_queue
+        // We add 1 because the "currentAckPoint" has already been popped from the inflight queue
+        // For the first SACK we take care of this by setting the ackpoint to cumAck - 1
+        let mut i = self.cumulative_tsn_ack_point + 1;
+        //log::debug!("[{}] i={} d={}", self.name, i, d.cumulative_tsn_ack);
+        while sna32lte(i, d.cumulative_tsn_ack) {
+            if let Some(c) = self.inflight_queue.pop(i) {
+                if !c.acked {
+                    // RFC 4096 sec 6.3.2.  Retransmission Timer Rules
+                    //   R3)  Whenever a SACK is received that acknowledges the DATA chunk
+                    //        with the earliest outstanding TSN for that address, restart the
+                    //        T3-rtx timer for that address with its current RTO (if there is
+                    //        still outstanding data on that address).
+                    if i == self.cumulative_tsn_ack_point + 1 {
+                        // T3 timer needs to be reset. Stop it for now.
+                        /*TODO: if let Some(t3rtx) = &self.t3rtx {
+                            t3rtx.stop().await;
+                        }*/
+                    }
+
+                    let n_bytes_acked = c.user_data.len() as i64;
+
+                    // Sum the number of bytes acknowledged per stream
+                    if let Some(amount) = bytes_acked_per_stream.get_mut(&c.stream_identifier) {
+                        *amount += n_bytes_acked;
+                    } else {
+                        bytes_acked_per_stream.insert(c.stream_identifier, n_bytes_acked);
+                    }
+
+                    // RFC 4960 sec 6.3.1.  RTO Calculation
+                    //   C4)  When data is in flight and when allowed by rule C5 below, a new
+                    //        RTT measurement MUST be made each round trip.  Furthermore, new
+                    //        RTT measurements SHOULD be made no more than once per round trip
+                    //        for a given destination transport address.
+                    //   C5)  Karn's algorithm: RTT measurements MUST NOT be made using
+                    //        packets that were retransmitted (and thus for which it is
+                    //        ambiguous whether the reply was for the first instance of the
+                    //        chunk or for a later instance)
+                    if c.nsent == 1 && sna32gte(c.tsn, self.min_tsn2measure_rtt) {
+                        self.min_tsn2measure_rtt = self.my_next_tsn;
+                        let rtt = match SystemTime::now().duration_since(c.since) {
+                            Ok(rtt) => rtt,
+                            Err(_) => return Err(Error::ErrInvalidSystemTime),
+                        };
+                        let srtt = self.rto_mgr.set_new_rtt(rtt.as_millis() as u64);
+                        trace!(
+                            "[{}] SACK: measured-rtt={} srtt={} new-rto={}",
+                            self.side,
+                            rtt.as_millis(),
+                            srtt,
+                            self.rto_mgr.get_rto()
+                        );
+                    }
+                }
+
+                if self.in_fast_recovery && c.tsn == self.fast_recover_exit_point {
+                    debug!("[{}] exit fast-recovery", self.side);
+                    self.in_fast_recovery = false;
+                }
+            } else {
+                return Err(Error::ErrInflightQueueTsnPop);
+            }
+
+            i += 1;
+        }
+
+        let mut htna = d.cumulative_tsn_ack;
+
+        // Mark selectively acknowledged chunks as "acked"
+        for g in &d.gap_ack_blocks {
+            for i in g.start..=g.end {
+                let tsn = d.cumulative_tsn_ack + i as u32;
+
+                let (is_existed, is_acked) = if let Some(c) = self.inflight_queue.get(tsn) {
+                    (true, c.acked)
+                } else {
+                    (false, false)
+                };
+                let n_bytes_acked = if is_existed && !is_acked {
+                    self.inflight_queue.mark_as_acked(tsn) as i64
+                } else {
+                    0
+                };
+
+                if let Some(c) = self.inflight_queue.get(tsn) {
+                    if !is_acked {
+                        // Sum the number of bytes acknowledged per stream
+                        if let Some(amount) = bytes_acked_per_stream.get_mut(&c.stream_identifier) {
+                            *amount += n_bytes_acked;
+                        } else {
+                            bytes_acked_per_stream.insert(c.stream_identifier, n_bytes_acked);
+                        }
+
+                        trace!("[{}] tsn={} has been sacked", self.side, c.tsn);
+
+                        if c.nsent == 1 {
+                            self.min_tsn2measure_rtt = self.my_next_tsn;
+                            let rtt = match SystemTime::now().duration_since(c.since) {
+                                Ok(rtt) => rtt,
+                                Err(_) => return Err(Error::ErrInvalidSystemTime),
+                            };
+                            let srtt = self.rto_mgr.set_new_rtt(rtt.as_millis() as u64);
+                            trace!(
+                                "[{}] SACK: measured-rtt={} srtt={} new-rto={}",
+                                self.side,
+                                rtt.as_millis(),
+                                srtt,
+                                self.rto_mgr.get_rto()
+                            );
+                        }
+
+                        if sna32lt(htna, tsn) {
+                            htna = tsn;
+                        }
+                    }
+                } else {
+                    return Err(Error::ErrTsnRequestNotExist);
+                }
+            }
+        }
+
+        Ok((bytes_acked_per_stream, htna))
+    }
+
+    fn on_cumulative_tsn_ack_point_advanced(&mut self, total_bytes_acked: i64) {
+        // RFC 4096, sec 6.3.2.  Retransmission Timer Rules
+        //   R2)  Whenever all outstanding data sent to an address have been
+        //        acknowledged, turn off the T3-rtx timer of that address.
+        if self.inflight_queue.is_empty() {
+            trace!(
+                "[{}] SACK: no more packet in-flight (pending={})",
+                self.side,
+                self.pending_queue.len()
+            );
+            /*TODO:if let Some(t3rtx) = &self.t3rtx {
+                t3rtx.stop().await;
+            }*/
+        } else {
+            trace!("[{}] T3-rtx timer start (pt2)", self.side);
+            /*TODO: if let Some(t3rtx) = &self.t3rtx {
+                t3rtx.start(self.rto_mgr.get_rto()).await;
+            }*/
+        }
+
+        // Update congestion control parameters
+        if self.cwnd <= self.ssthresh {
+            // RFC 4096, sec 7.2.1.  Slow-Start
+            //   o  When cwnd is less than or equal to ssthresh, an SCTP endpoint MUST
+            //		use the slow-start algorithm to increase cwnd only if the current
+            //      congestion window is being fully utilized, an incoming SACK
+            //      advances the Cumulative TSN Ack Point, and the data sender is not
+            //      in Fast Recovery.  Only when these three conditions are met can
+            //      the cwnd be increased; otherwise, the cwnd MUST not be increased.
+            //		If these conditions are met, then cwnd MUST be increased by, at
+            //      most, the lesser of 1) the total size of the previously
+            //      outstanding DATA chunk(s) acknowledged, and 2) the destination's
+            //      path MTU.
+            if !self.in_fast_recovery && self.pending_queue.len() > 0 {
+                self.cwnd += std::cmp::min(total_bytes_acked as u32, self.cwnd); // TCP way
+                                                                                 // self.cwnd += min32(uint32(total_bytes_acked), self.mtu) // SCTP way (slow)
+                trace!(
+                    "[{}] updated cwnd={} ssthresh={} acked={} (SS)",
+                    self.side,
+                    self.cwnd,
+                    self.ssthresh,
+                    total_bytes_acked
+                );
+            } else {
+                trace!(
+                    "[{}] cwnd did not grow: cwnd={} ssthresh={} acked={} FR={} pending={}",
+                    self.side,
+                    self.cwnd,
+                    self.ssthresh,
+                    total_bytes_acked,
+                    self.in_fast_recovery,
+                    self.pending_queue.len()
+                );
+            }
+        } else {
+            // RFC 4096, sec 7.2.2.  Congestion Avoidance
+            //   o  Whenever cwnd is greater than ssthresh, upon each SACK arrival
+            //      that advances the Cumulative TSN Ack Point, increase
+            //      partial_bytes_acked by the total number of bytes of all new chunks
+            //      acknowledged in that SACK including chunks acknowledged by the new
+            //      Cumulative TSN Ack and by Gap Ack Blocks.
+            self.partial_bytes_acked += total_bytes_acked as u32;
+
+            //   o  When partial_bytes_acked is equal to or greater than cwnd and
+            //      before the arrival of the SACK the sender had cwnd or more bytes
+            //      of data outstanding (i.e., before arrival of the SACK, flight size
+            //      was greater than or equal to cwnd), increase cwnd by MTU, and
+            //      reset partial_bytes_acked to (partial_bytes_acked - cwnd).
+            if self.partial_bytes_acked >= self.cwnd && self.pending_queue.len() > 0 {
+                self.partial_bytes_acked -= self.cwnd;
+                self.cwnd += self.mtu;
+                trace!(
+                    "[{}] updated cwnd={} ssthresh={} acked={} (CA)",
+                    self.side,
+                    self.cwnd,
+                    self.ssthresh,
+                    total_bytes_acked
+                );
+            }
+        }
+    }
+
+    fn process_fast_retransmission(
+        &mut self,
+        cum_tsn_ack_point: u32,
+        htna: u32,
+        cum_tsn_ack_point_advanced: bool,
+    ) -> Result<()> {
+        // HTNA algorithm - RFC 4960 Sec 7.2.4
+        // Increment missIndicator of each chunks that the SACK reported missing
+        // when either of the following is met:
+        // a)  Not in fast-recovery
+        //     miss indications are incremented only for missing TSNs prior to the
+        //     highest TSN newly acknowledged in the SACK.
+        // b)  In fast-recovery AND the Cumulative TSN Ack Point advanced
+        //     the miss indications are incremented for all TSNs reported missing
+        //     in the SACK.
+        if !self.in_fast_recovery || cum_tsn_ack_point_advanced {
+            let max_tsn = if !self.in_fast_recovery {
+                // a) increment only for missing TSNs prior to the HTNA
+                htna
+            } else {
+                // b) increment for all TSNs reported missing
+                cum_tsn_ack_point + (self.inflight_queue.len() as u32) + 1
+            };
+
+            let mut tsn = cum_tsn_ack_point + 1;
+            while sna32lt(tsn, max_tsn) {
+                if let Some(c) = self.inflight_queue.get_mut(tsn) {
+                    if !c.acked && !c.abandoned() && c.miss_indicator < 3 {
+                        c.miss_indicator += 1;
+                        if c.miss_indicator == 3 && !self.in_fast_recovery {
+                            // 2)  If not in Fast Recovery, adjust the ssthresh and cwnd of the
+                            //     destination address(es) to which the missing DATA chunks were
+                            //     last sent, according to the formula described in Section 7.2.3.
+                            self.in_fast_recovery = true;
+                            self.fast_recover_exit_point = htna;
+                            self.ssthresh = std::cmp::max(self.cwnd / 2, 4 * self.mtu);
+                            self.cwnd = self.ssthresh;
+                            self.partial_bytes_acked = 0;
+                            self.will_retransmit_fast = true;
+
+                            trace!(
+                                "[{}] updated cwnd={} ssthresh={} inflight={} (FR)",
+                                self.side,
+                                self.cwnd,
+                                self.ssthresh,
+                                self.inflight_queue.get_num_bytes()
+                            );
+                        }
+                    }
+                } else {
+                    return Err(Error::ErrTsnRequestNotExist);
+                }
+
+                tsn += 1;
+            }
+        }
+
+        if self.in_fast_recovery && cum_tsn_ack_point_advanced {
+            self.will_retransmit_fast = true;
+        }
+
+        Ok(())
+    }
+
+    /// The caller must hold the lock. This method was only added because the
+    /// linter was complaining about the "cognitive complexity" of handle_sack.
+    fn postprocess_sack(&mut self, state: AssociationState, mut should_awake_write_loop: bool) {
+        if !self.inflight_queue.is_empty() {
+            // Start timer. (noop if already started)
+            trace!("[{}] T3-rtx timer start (pt3)", self.side);
+            /*TODO:if let Some(t3rtx) = &self.t3rtx {
+                t3rtx.start(self.rto_mgr.get_rto()).await;
+            }*/
+        } else if state == AssociationState::ShutdownPending {
+            // No more outstanding, send shutdown.
+            should_awake_write_loop = true;
+            self.will_send_shutdown = true;
+            self.set_state(AssociationState::ShutdownSent);
+        } else if state == AssociationState::ShutdownReceived {
+            // No more outstanding, send shutdown ack.
+            should_awake_write_loop = true;
             self.will_send_shutdown_ack = true;
             self.set_state(AssociationState::ShutdownAckSent);
+        }
 
+        if should_awake_write_loop {
             //TODO: self.awake_write_loop();
         }
-
-        Ok(vec![])
     }
 
-    fn handle_shutdown_ack(&mut self, _: &ChunkShutdownAck) -> Result<Vec<Packet>> {
-        let state = self.get_state();
-        if state == AssociationState::ShutdownSent || state == AssociationState::ShutdownAckSent {
-            /*TODO: if let Some(t2shutdown) = &self.t2shutdown {
-                t2shutdown.stop().await;
-            }*/
-            self.will_send_shutdown_complete = true;
-
-            //TODO: self.awake_write_loop();
+    fn reset_streams_if_any(&mut self, p: &ParamOutgoingResetRequest) -> Packet {
+        let mut result = ReconfigResult::SuccessPerformed;
+        if sna32lte(p.sender_last_tsn, self.peer_last_tsn) {
+            debug!(
+                "[{}] resetStream(): senderLastTSN={} <= peer_last_tsn={}",
+                self.side, p.sender_last_tsn, self.peer_last_tsn
+            );
+            for id in &p.stream_identifiers {
+                /*TODO: if let Some(s) = self.streams.get(id) {
+                    let stream_identifier = s.stream_identifier;
+                    self.unregister_stream(stream_identifier);
+                }*/
+            }
+            self.reconfig_requests
+                .remove(&p.reconfig_request_sequence_number);
+        } else {
+            debug!(
+                "[{}] resetStream(): senderLastTSN={} > peer_last_tsn={}",
+                self.side, p.sender_last_tsn, self.peer_last_tsn
+            );
+            result = ReconfigResult::InProgress;
         }
 
-        Ok(vec![])
+        self.create_packet(vec![Box::new(ChunkReconfig {
+            param_a: Some(Box::new(ParamReconfigResponse {
+                reconfig_response_sequence_number: p.reconfig_request_sequence_number,
+                result,
+            })),
+            param_b: None,
+        })])
     }
 
-    fn handle_shutdown_complete(&mut self, _: &ChunkShutdownComplete) -> Result<Vec<Packet>> {
-        let state = self.get_state();
-        if state == AssociationState::ShutdownAckSent {
-            /*TODO: if let Some(t2shutdown) = &self.t2shutdown {
-                t2shutdown.stop().await;
-            }*/
-            //TODO: self.close().await?;
+    /// create_packet wraps chunks in a packet.
+    /// The caller should hold the read lock.
+    fn create_packet(&self, chunks: Vec<Box<dyn Chunk + Send + Sync>>) -> Packet {
+        Packet {
+            verification_tag: self.peer_verification_tag,
+            source_port: self.source_port,
+            destination_port: self.destination_port,
+            chunks,
         }
+    }
 
-        Ok(vec![])
+    /// create_stream creates a stream. The caller should hold the lock and check no stream exists for this id.
+    fn create_stream(&mut self, stream_identifier: u16, accept: bool) -> Option<Arc<Stream>> {
+        let s = Arc::new(Stream::new(
+            /*TODO:format!("{}:{}", stream_identifier, self.name),
+            stream_identifier,
+            self.max_payload_size,
+            Arc::clone(&self.max_message_size),
+            Arc::clone(&self.state),
+            self.awake_write_loop_ch.clone(),
+            Arc::clone(&self.pending_queue),*/
+        ));
+
+        /*TODO: if accept {
+            if let Some(accept_ch) = &self.accept_ch_tx {
+                if accept_ch.try_send(Arc::clone(&s)).is_ok() {
+                    debug!(
+                        "[{}] accepted a new stream (streamIdentifier: {})",
+                        self.side, stream_identifier
+                    );
+                } else {
+                    debug!("[{}] dropped a new stream due to accept_ch full", self.side);
+                    return None;
+                }
+            } else {
+                debug!(
+                    "[{}] dropped a new stream due to accept_ch_tx is None",
+                    self.side
+                );
+                return None;
+            }
+        }*/
+        self.streams.insert(stream_identifier, Arc::clone(&s));
+        Some(s)
+    }
+
+    /// get_or_create_stream gets or creates a stream. The caller should hold the lock.
+    fn get_or_create_stream(&mut self, stream_identifier: u16) -> Option<Arc<Stream>> {
+        if self.streams.contains_key(&stream_identifier) {
+            self.streams.get(&stream_identifier).cloned()
+        } else {
+            self.create_stream(stream_identifier, true)
+        }
+    }
+
+    fn get_my_receiver_window_credit(&self) -> u32 {
+        let mut bytes_queued = 0;
+        /*TODO: for s in self.streams.values() {
+            bytes_queued += s.get_num_bytes_in_reassembly_queue().await as u32;
+        }*/
+
+        if bytes_queued >= self.max_receive_buffer_size {
+            0
+        } else {
+            self.max_receive_buffer_size - bytes_queued
+        }
     }
 }
