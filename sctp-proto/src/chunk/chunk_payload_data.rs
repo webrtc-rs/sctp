@@ -2,9 +2,7 @@ use super::{chunk_header::*, chunk_type::*, *};
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use std::fmt;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::Instant;
 
 pub(crate) const PAYLOAD_DATA_ENDING_FRAGMENT_BITMASK: u8 = 1;
 pub(crate) const PAYLOAD_DATA_BEGINING_FRAGMENT_BITMASK: u8 = 2;
@@ -111,14 +109,14 @@ pub struct ChunkPayloadData {
     pub(crate) miss_indicator: u32,
 
     /// Partial-reliability parameters used only by sender
-    pub(crate) since: SystemTime,
+    pub(crate) since: Instant,
     /// number of transmission made for this chunk
     pub(crate) nsent: u32,
 
     /// valid only with the first fragment
-    pub(crate) abandoned: Arc<AtomicBool>,
+    pub(crate) abandoned: bool,
     /// valid only with the first fragment
-    pub(crate) all_inflight: Arc<AtomicBool>,
+    pub(crate) all_inflight: bool,
 
     /// Retransmission flag set when T1-RTX timeout occurred and this
     /// chunk is still in the inflight queue
@@ -139,10 +137,10 @@ impl Default for ChunkPayloadData {
             user_data: Bytes::new(),
             acked: false,
             miss_indicator: 0,
-            since: SystemTime::now(),
+            since: Instant::now(),
             nsent: 0,
-            abandoned: Arc::new(AtomicBool::new(false)),
-            all_inflight: Arc::new(AtomicBool::new(false)),
+            abandoned: false,
+            all_inflight: false,
             retransmit: false,
         }
     }
@@ -217,10 +215,10 @@ impl Chunk for ChunkPayloadData {
             user_data,
             acked: false,
             miss_indicator: 0,
-            since: SystemTime::now(),
+            since: Instant::now(),
             nsent: 0,
-            abandoned: Arc::new(AtomicBool::new(false)),
-            all_inflight: Arc::new(AtomicBool::new(false)),
+            abandoned: false,
+            all_inflight: false,
             retransmit: false,
         })
     }
@@ -252,21 +250,16 @@ impl Chunk for ChunkPayloadData {
 
 impl ChunkPayloadData {
     pub(crate) fn abandoned(&self) -> bool {
-        let (abandoned, all_inflight) = (
-            self.abandoned.load(Ordering::SeqCst),
-            self.all_inflight.load(Ordering::SeqCst),
-        );
-
-        abandoned && all_inflight
+        self.abandoned && self.all_inflight
     }
 
-    pub(crate) fn set_abandoned(&self, abandoned: bool) {
-        self.abandoned.store(abandoned, Ordering::SeqCst);
+    pub(crate) fn set_abandoned(&mut self, abandoned: bool) {
+        self.abandoned = abandoned;
     }
 
     pub(crate) fn set_all_inflight(&mut self) {
         if self.ending_fragment {
-            self.all_inflight.store(true, Ordering::SeqCst);
+            self.all_inflight = true;
         }
     }
 }

@@ -5,8 +5,6 @@ use std::collections::VecDeque;
 /// pendingBaseQueue
 pub(crate) type PendingBaseQueue = VecDeque<ChunkPayloadData>;
 
-// TODO: benchmark performance between multiple Atomic+Mutex vs one Mutex<PendingQueueInternal>
-
 /// pendingQueue
 #[derive(Debug, Default)]
 pub(crate) struct PendingQueue {
