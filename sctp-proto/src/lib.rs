@@ -17,7 +17,12 @@
 #![allow(clippy::too_many_arguments)]
 
 use crate::shared::EcnCodepoint;
-use std::net::{IpAddr, SocketAddr};
+
+use std::{
+    fmt,
+    net::{IpAddr, SocketAddr},
+    ops,
+};
 
 pub mod association;
 pub mod chunk;
@@ -29,6 +34,56 @@ pub mod param;
 pub mod shared;
 
 pub(crate) mod util;
+
+/// Whether an endpoint was the initiator of a connection
+#[cfg_attr(feature = "arbitrary", derive(Arbitrary))]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub enum Side {
+    /// The initiator of a connection
+    Client = 0,
+    /// The acceptor of a connection
+    Server = 1,
+}
+
+impl Default for Side {
+    fn default() -> Self {
+        Side::Client
+    }
+}
+
+impl fmt::Display for Side {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match *self {
+            Side::Client => "Client",
+            Side::Server => "Server",
+        };
+        write!(f, "{}", s)
+    }
+}
+
+impl Side {
+    #[inline]
+    /// Shorthand for `self == Side::Client`
+    pub fn is_client(self) -> bool {
+        self == Side::Client
+    }
+
+    #[inline]
+    /// Shorthand for `self == Side::Server`
+    pub fn is_server(self) -> bool {
+        self == Side::Server
+    }
+}
+
+impl ops::Not for Side {
+    type Output = Side;
+    fn not(self) -> Side {
+        match self {
+            Side::Client => Side::Server,
+            Side::Server => Side::Client,
+        }
+    }
+}
 
 /// An outgoing packet
 #[derive(Debug)]
