@@ -28,7 +28,7 @@ use crate::shared::AssociationId;
 use crate::util::{sna16lt, sna32gt, sna32gte, sna32lt, sna32lte, AssociationIdGenerator};
 use crate::Side;
 
-use crate::association::timer::RtoManager;
+use crate::association::timer::{RtoManager, Timer, TimerTable, ACK_INTERVAL};
 use crate::chunk::chunk_forward_tsn::ChunkForwardTsnStream;
 use crate::chunk::chunk_payload_data::PayloadProtocolIdentifier;
 use crate::param::param_reconfig_response::{ParamReconfigResponse, ReconfigResult};
@@ -109,6 +109,7 @@ pub struct Association {
     use_forward_tsn: bool,
 
     rto_mgr: RtoManager,
+    timers: TimerTable,
 
     // Congestion control parameters
     max_receive_buffer_size: u32,
@@ -181,6 +182,8 @@ impl Association {
             max_payload_size: INITIAL_MTU - (COMMON_HEADER_SIZE + DATA_CHUNK_HEADER_SIZE),
 
             rto_mgr: RtoManager::new(),
+            timers: TimerTable::new(),
+
             mtu,
             cwnd,
             my_verification_tag: random::<u32>(),
@@ -207,10 +210,8 @@ impl Association {
             this.set_state(AssociationState::CookieWait);
             this.stored_init = Some(init);
             let _ = this.send_init();
-            /*TODO: let rto = ai.rto_mgr.get_rto();
-            if let Some(t1init) = &ai.t1init {
-                t1init.start(rto).await;
-            }*/
+            let rto = this.rto_mgr.get_rto();
+            this.timers.start(Timer::T1Init, now, rto);
         }
 
         this
@@ -318,7 +319,7 @@ impl Association {
             self.handle_chunk(&p, c, now)?;
         }
 
-        self.handle_chunk_end();
+        self.handle_chunk_end(now);
 
         Ok(())
     }
@@ -328,19 +329,15 @@ impl Association {
         self.immediate_ack_triggered = false;
     }
 
-    fn handle_chunk_end(&mut self) {
+    fn handle_chunk_end(&mut self, now: Instant) {
         if self.immediate_ack_triggered {
             self.ack_state = AckState::Immediate;
-            //TODO:if let Some(ack_timer) = &mut self.ack_timer {
-            //    ack_timer.stop();
-            //}
+            self.timers.stop(Timer::Ack);
             self.awake_write_loop();
         } else if self.delayed_ack_triggered {
             // Will send delayed ack in the next ack timeout
             self.ack_state = AckState::Delay;
-            //TODO: if let Some(ack_timer) = &mut self.ack_timer {
-            //    ack_timer.start();
-            //}
+            self.timers.start(Timer::Ack, now, ACK_INTERVAL);
         }
     }
 
@@ -355,7 +352,7 @@ impl Association {
         let chunk_any = chunk.as_any();
         let packets = if let Some(c) = chunk_any.downcast_ref::<ChunkInit>() {
             if c.is_ack {
-                self.handle_init_ack(p, c)?
+                self.handle_init_ack(p, c, now)?
             } else {
                 self.handle_init(p, c)?
             }
@@ -481,7 +478,7 @@ impl Association {
         Ok(vec![outbound])
     }
 
-    fn handle_init_ack(&mut self, p: &Packet, i: &ChunkInit) -> Result<Vec<Packet>> {
+    fn handle_init_ack(&mut self, p: &Packet, i: &ChunkInit, now: Instant) -> Result<Vec<Packet>> {
         let state = self.get_state();
         debug!("[{}] chunkInitAck received in state '{}'", self.side, state);
         if state != AssociationState::CookieWait {
@@ -517,17 +514,15 @@ impl Association {
         //     example, implementations MAY use the size of the receiver
         //     advertised window).
         self.ssthresh = self.rwnd;
-        /*TODO:trace!(
+        trace!(
             "[{}] updated cwnd={} ssthresh={} inflight={} (INI)",
             self.side,
             self.cwnd,
             self.ssthresh,
             self.inflight_queue.get_num_bytes()
-        );*/
+        );
 
-        /*TODO:if let Some(t1init) = &self.t1init {
-            t1init.stop().await;
-        }*/
+        self.timers.stop(Timer::T1Init);
         self.stored_init = None;
 
         let mut cookie_param = None;
@@ -554,9 +549,8 @@ impl Association {
 
             self.send_cookie_echo()?;
 
-            /*TODO: if let Some(t1cookie) = &self.t1cookie {
-                t1cookie.start(self.rto_mgr.get_rto()).await;
-            }*/
+            self.timers
+                .start(Timer::T1Cookie, now, self.rto_mgr.get_rto());
 
             self.set_state(AssociationState::CookieEchoed);
 
@@ -609,14 +603,10 @@ impl Association {
                         return Ok(vec![]);
                     }
 
-                    /*TODO: if let Some(t1init) = &self.t1init {
-                        t1init.stop().await;
-                    }*/
+                    self.timers.stop(Timer::T1Init);
                     self.stored_init = None;
 
-                    /*TODO: if let Some(t1cookie) = &self.t1cookie {
-                        t1cookie.stop().await;
-                    }*/
+                    self.timers.stop(Timer::T1Cookie);
                     self.stored_cookie_echo = None;
 
                     self.set_state(AssociationState::Established);
@@ -650,9 +640,7 @@ impl Association {
             return Ok(vec![]);
         }
 
-        /*TODO: if let Some(t1cookie) = &self.t1cookie {
-            t1cookie.stop().await;
-        }*/
+        self.timers.stop(Timer::T1Cookie);
         self.stored_cookie_echo = None;
 
         self.set_state(AssociationState::Established);
@@ -707,9 +695,9 @@ impl Association {
         let immediate_sack = d.immediate_sack;
 
         if stream_handle_data {
-            /*TODO: if let Some(s) = self.streams.get_mut(&d.stream_identifier) {
-                s.handle_data(d.clone());
-            }*/
+            if let Some(s) = self.streams.get_mut(&d.stream_identifier) {
+                //TODO: s.handle_data(d.clone());
+            }
         }
 
         self.handle_peer_last_tsn_and_acknowledgement(immediate_sack)
@@ -769,13 +757,13 @@ impl Association {
 
             self.cumulative_tsn_ack_point = d.cumulative_tsn_ack;
             cum_tsn_ack_point_advanced = true;
-            self.on_cumulative_tsn_ack_point_advanced(total_bytes_acked);
+            self.on_cumulative_tsn_ack_point_advanced(total_bytes_acked, now);
         }
 
         for (si, n_bytes_acked) in &bytes_acked_per_stream {
-            /*TODO: if let Some(s) = self.streams.get_mut(si) {
-                s.on_buffer_released(*n_bytes_acked);
-            }*/
+            if let Some(s) = self.streams.get_mut(si) {
+                //TODO: s.on_buffer_released(*n_bytes_acked);
+            }
         }
 
         // New rwnd value
@@ -831,7 +819,7 @@ impl Association {
             self.awake_write_loop();
         }
 
-        self.postprocess_sack(state, cum_tsn_ack_point_advanced);
+        self.postprocess_sack(state, cum_tsn_ack_point_advanced, now);
 
         Ok(vec![])
     }
@@ -892,9 +880,7 @@ impl Association {
         if sna32lte(c.new_cumulative_tsn, self.peer_last_tsn) {
             trace!("[{}] sending ack on Forward TSN", self.side);
             self.ack_state = AckState::Immediate;
-            /*TODO: if let Some(ack_timer) = &mut self.ack_timer {
-                ack_timer.stop();
-            }*/
+            self.timers.stop(Timer::Ack);
             self.awake_write_loop();
             return Ok(vec![]);
         }
@@ -919,9 +905,9 @@ impl Association {
         // corresponding streams so that the abandoned chunks can be removed
         // from the reassemblyQueue.
         for forwarded in &c.streams {
-            /*TODO: if let Some(s) = self.streams.get_mut(&forwarded.identifier) {
-                s.handle_forward_tsn_for_ordered(forwarded.sequence);
-            }*/
+            if let Some(s) = self.streams.get_mut(&forwarded.identifier) {
+                //TODO: s.handle_forward_tsn_for_ordered(forwarded.sequence);
+            }
         }
 
         // TSN may be forewared for unordered chunks. ForwardTSN chunk does not
@@ -929,9 +915,9 @@ impl Association {
         // Therefore, we need to broadcast this event to all existing streams for
         // unordered chunks.
         // See https://github.com/pion/sctp/issues/106
-        /*TODO: for s in self.streams.values_mut() {
-            s.handle_forward_tsn_for_unordered(c.new_cumulative_tsn);
-        }*/
+        for s in self.streams.values_mut() {
+            //TODO: s.handle_forward_tsn_for_unordered(c.new_cumulative_tsn);
+        }
 
         self.handle_peer_last_tsn_and_acknowledgement(false)
     }
@@ -964,9 +950,7 @@ impl Association {
     fn handle_shutdown_ack(&mut self, _: &ChunkShutdownAck) -> Result<Vec<Packet>> {
         let state = self.get_state();
         if state == AssociationState::ShutdownSent || state == AssociationState::ShutdownAckSent {
-            /*TODO: if let Some(t2shutdown) = &self.t2shutdown {
-                t2shutdown.stop().await;
-            }*/
+            self.timers.stop(Timer::T2Shutdown);
             self.will_send_shutdown_complete = true;
 
             self.awake_write_loop();
@@ -978,9 +962,7 @@ impl Association {
     fn handle_shutdown_complete(&mut self, _: &ChunkShutdownComplete) -> Result<Vec<Packet>> {
         let state = self.get_state();
         if state == AssociationState::ShutdownAckSent {
-            /*TODO: if let Some(t2shutdown) = &self.t2shutdown {
-                t2shutdown.stop().await;
-            }*/
+            self.timers.stop(Timer::T2Shutdown);
             //TODO: self.close().await?;
         }
 
@@ -1055,9 +1037,7 @@ impl Association {
         } else if let Some(p) = raw.as_any().downcast_ref::<ParamReconfigResponse>() {
             self.reconfigs.remove(&p.reconfig_response_sequence_number);
             if self.reconfigs.is_empty() {
-                /*TODO: if let Some(treconfig) = &self.treconfig {
-                    treconfig.stop().await;
-                }*/
+                self.timers.stop(Timer::Reconfig);
             }
             Ok(None)
         } else {
@@ -1087,9 +1067,7 @@ impl Association {
                     //        still outstanding data on that address).
                     if i == self.cumulative_tsn_ack_point + 1 {
                         // T3 timer needs to be reset. Stop it for now.
-                        /*TODO: if let Some(t3rtx) = &self.t3rtx {
-                            t3rtx.stop().await;
-                        }*/
+                        self.timers.stop(Timer::T3RTX);
                     }
 
                     let n_bytes_acked = c.user_data.len() as i64;
@@ -1198,7 +1176,7 @@ impl Association {
         Ok((bytes_acked_per_stream, htna))
     }
 
-    fn on_cumulative_tsn_ack_point_advanced(&mut self, total_bytes_acked: i64) {
+    fn on_cumulative_tsn_ack_point_advanced(&mut self, total_bytes_acked: i64, now: Instant) {
         // RFC 4096, sec 6.3.2.  Retransmission Timer Rules
         //   R2)  Whenever all outstanding data sent to an address have been
         //        acknowledged, turn off the T3-rtx timer of that address.
@@ -1208,14 +1186,10 @@ impl Association {
                 self.side,
                 self.pending_queue.len()
             );
-            /*TODO:if let Some(t3rtx) = &self.t3rtx {
-                t3rtx.stop().await;
-            }*/
+            self.timers.stop(Timer::T3RTX);
         } else {
             trace!("[{}] T3-rtx timer start (pt2)", self.side);
-            /*TODO: if let Some(t3rtx) = &self.t3rtx {
-                t3rtx.start(self.rto_mgr.get_rto()).await;
-            }*/
+            self.timers.start(Timer::T3RTX, now, self.rto_mgr.get_rto());
         }
 
         // Update congestion control parameters
@@ -1346,13 +1320,16 @@ impl Association {
 
     /// The caller must hold the lock. This method was only added because the
     /// linter was complaining about the "cognitive complexity" of handle_sack.
-    fn postprocess_sack(&mut self, state: AssociationState, mut should_awake_write_loop: bool) {
+    fn postprocess_sack(
+        &mut self,
+        state: AssociationState,
+        mut should_awake_write_loop: bool,
+        now: Instant,
+    ) {
         if !self.inflight_queue.is_empty() {
             // Start timer. (noop if already started)
             trace!("[{}] T3-rtx timer start (pt3)", self.side);
-            /*TODO:if let Some(t3rtx) = &self.t3rtx {
-                t3rtx.start(self.rto_mgr.get_rto()).await;
-            }*/
+            self.timers.start(Timer::T3RTX, now, self.rto_mgr.get_rto());
         } else if state == AssociationState::ShutdownPending {
             // No more outstanding, send shutdown.
             should_awake_write_loop = true;
@@ -1459,9 +1436,9 @@ impl Association {
 
     fn get_my_receiver_window_credit(&self) -> u32 {
         let mut bytes_queued = 0;
-        /*TODO: for s in self.streams.values() {
-            bytes_queued += s.get_num_bytes_in_reassembly_queue().await as u32;
-        }*/
+        for s in self.streams.values() {
+            //TODO: bytes_queued += s.get_num_bytes_in_reassembly_queue().await as u32;
+        }
 
         if bytes_queued >= self.max_receive_buffer_size {
             0
@@ -1502,9 +1479,11 @@ impl Association {
                 raw_packets = self.gather_data_packets_to_retransmit(raw_packets, now);
                 raw_packets = self.gather_outbound_fast_retransmission_packets(raw_packets, now);
                 raw_packets = self.gather_outbound_sack_packets(raw_packets);
-                self.gather_outbound_shutdown_packets(raw_packets)
+                self.gather_outbound_shutdown_packets(raw_packets, now)
             }
-            AssociationState::ShutdownAckSent => self.gather_outbound_shutdown_packets(raw_packets),
+            AssociationState::ShutdownAckSent => {
+                self.gather_outbound_shutdown_packets(raw_packets, now)
+            }
             _ => (raw_packets, true),
         }
     }
@@ -1539,9 +1518,8 @@ impl Association {
         if !chunks.is_empty() {
             // Start timer. (noop if already started)
             trace!("[{}] T3-rtx timer start (pt1)", self.side);
-            /*TODO: if let Some(t3rtx) = &self.t3rtx {
-                t3rtx.start(self.rto_mgr.get_rto()).await;
-            }*/
+            self.timers.start(Timer::T3RTX, now, self.rto_mgr.get_rto());
+
             for p in &self.bundle_data_chunks_into_packets(chunks) {
                 if let Ok(raw) = p.marshal() {
                     raw_packets.push(raw);
@@ -1606,9 +1584,8 @@ impl Association {
             }
 
             if !self.reconfigs.is_empty() {
-                /*TODO: if let Some(treconfig) = &self.treconfig {
-                    treconfig.start(self.rto_mgr.get_rto()).await;
-                }*/
+                self.timers
+                    .start(Timer::Reconfig, now, self.rto_mgr.get_rto());
             }
         }
 
@@ -1734,6 +1711,7 @@ impl Association {
     fn gather_outbound_shutdown_packets(
         &mut self,
         mut raw_packets: Vec<Bytes>,
+        now: Instant,
     ) -> (Vec<Bytes>, bool) {
         let mut ok = true;
 
@@ -1745,9 +1723,8 @@ impl Association {
             };
 
             if let Ok(raw) = self.create_packet(vec![Box::new(shutdown)]).marshal() {
-                /*TODO: if let Some(t2shutdown) = &self.t2shutdown {
-                    t2shutdown.start(self.rto_mgr.get_rto()).await;
-                }*/
+                self.timers
+                    .start(Timer::T2Shutdown, now, self.rto_mgr.get_rto());
                 raw_packets.push(raw);
             } else {
                 warn!("[{}] failed to serialize a Shutdown packet", self.side);
@@ -1758,9 +1735,8 @@ impl Association {
             let shutdown_ack = ChunkShutdownAck {};
 
             if let Ok(raw) = self.create_packet(vec![Box::new(shutdown_ack)]).marshal() {
-                /*TODO: if let Some(t2shutdown) = &self.t2shutdown {
-                    t2shutdown.start(self.rto_mgr.get_rto()).await;
-                }*/
+                self.timers
+                    .start(Timer::T2Shutdown, now, self.rto_mgr.get_rto());
                 raw_packets.push(raw);
             } else {
                 warn!("[{}] failed to serialize a ShutdownAck packet", self.side);

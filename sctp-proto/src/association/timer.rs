@@ -1,5 +1,9 @@
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
+pub(crate) const ACK_INTERVAL: u64 = 200;
+const MAX_INIT_RETRANS: usize = 8;
+const PATH_MAX_RETRANS: usize = 5;
+const NO_MAX_RETRANS: usize = usize::MAX;
 const TIMER_COUNT: usize = 6;
 
 #[derive(Debug, Copy, Clone, Ord, PartialOrd, Eq, PartialEq)]
@@ -27,39 +31,69 @@ impl Timer {
 #[derive(Debug, Copy, Clone, Default)]
 pub(crate) struct TimerTable {
     data: [Option<Instant>; TIMER_COUNT],
+    retrans: [usize; TIMER_COUNT],
+    max_retrans: [usize; TIMER_COUNT],
 }
 
 impl TimerTable {
-    pub fn set(&mut self, timer: Timer, time: Instant) {
-        self.data[timer as usize] = Some(time);
+    pub fn new() -> Self {
+        TimerTable {
+            max_retrans: [
+                MAX_INIT_RETRANS, //T1Init
+                MAX_INIT_RETRANS, //T1Cookie
+                NO_MAX_RETRANS,   //T2Shutdown
+                NO_MAX_RETRANS,   //T3RTX
+                NO_MAX_RETRANS,   //Reconfig
+                NO_MAX_RETRANS,   //Ack
+            ],
+            ..Default::default()
+        }
     }
 
     pub fn get(&self, timer: Timer) -> Option<Instant> {
         self.data[timer as usize]
     }
 
-    pub fn stop(&mut self, timer: Timer) {
-        self.data[timer as usize] = None;
-    }
-
     pub fn next_timeout(&self) -> Option<Instant> {
         self.data.iter().filter_map(|&x| x).min()
     }
 
-    pub fn is_expired(&self, timer: Timer, after: Instant) -> bool {
-        self.data[timer as usize].map_or(false, |x| x <= after)
+    pub fn start(&mut self, timer: Timer, now: Instant, interval: u64) {
+        let interval = if timer == Timer::Ack {
+            interval
+        } else {
+            calculate_next_timeout(interval, self.retrans[timer as usize])
+        };
+
+        let time = now + Duration::from_millis(interval);
+        self.data[timer as usize] = Some(time);
+    }
+
+    pub fn stop(&mut self, timer: Timer) {
+        self.data[timer as usize] = None;
+        self.retrans[timer as usize] = 0;
+    }
+
+    pub fn is_expired(&mut self, timer: Timer, after: Instant) -> (bool, bool) {
+        let expired = self.data[timer as usize].map_or(false, |x| x <= after);
+        let mut failure = false;
+        if expired {
+            self.retrans[timer as usize] += 1;
+            if self.retrans[timer as usize] >= self.max_retrans[timer as usize] {
+                failure = true;
+            }
+        }
+
+        (expired, failure)
     }
 }
 
-pub(crate) const RTO_INITIAL: u64 = 3000; // msec
-pub(crate) const RTO_MIN: u64 = 1000; // msec
-pub(crate) const RTO_MAX: u64 = 60000; // msec
-pub(crate) const RTO_ALPHA: u64 = 1;
-pub(crate) const RTO_BETA: u64 = 2;
-pub(crate) const RTO_BASE: u64 = 8;
-pub(crate) const MAX_INIT_RETRANS: usize = 8;
-pub(crate) const PATH_MAX_RETRANS: usize = 5;
-pub(crate) const NO_MAX_RETRANS: usize = 0;
+const RTO_INITIAL: u64 = 3000; // msec
+const RTO_MIN: u64 = 1000; // msec
+const RTO_MAX: u64 = 60000; // msec
+const RTO_ALPHA: u64 = 1;
+const RTO_BETA: u64 = 2;
+const RTO_BASE: u64 = 8;
 
 /// rtoManager manages Rtx timeout values.
 /// This is an implementation of RFC 4960 sec 6.3.1.
@@ -129,7 +163,7 @@ impl RtoManager {
     }
 }
 
-pub(crate) fn calculate_next_timeout(rto: u64, n_rtos: usize) -> u64 {
+fn calculate_next_timeout(rto: u64, n_rtos: usize) -> u64 {
     // RFC 4096 sec 6.3.3.  Handle T3-rtx Expiration
     //   E2)  For the destination address for which the timer expires, set RTO
     //        <- RTO * 2 ("back off the timer").  The maximum value discussed
