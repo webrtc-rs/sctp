@@ -109,7 +109,7 @@ pub struct ChunkPayloadData {
     pub(crate) miss_indicator: u32,
 
     /// Partial-reliability parameters used only by sender
-    pub(crate) since: Instant,
+    pub(crate) since: Option<Instant>,
     /// number of transmission made for this chunk
     pub(crate) nsent: u32,
 
@@ -137,7 +137,7 @@ impl Default for ChunkPayloadData {
             user_data: Bytes::new(),
             acked: false,
             miss_indicator: 0,
-            since: Instant::now(),
+            since: None,
             nsent: 0,
             abandoned: false,
             all_inflight: false,
@@ -207,15 +207,15 @@ impl Chunk for ChunkPayloadData {
             beginning_fragment,
             ending_fragment,
             immediate_sack,
-
             tsn,
             stream_identifier,
             stream_sequence_number,
             payload_type,
             user_data,
+
             acked: false,
             miss_indicator: 0,
-            since: Instant::now(),
+            since: None,
             nsent: 0,
             abandoned: false,
             all_inflight: false,

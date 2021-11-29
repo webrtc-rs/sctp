@@ -32,7 +32,7 @@ use crate::association::timer::RtoManager;
 use crate::chunk::chunk_forward_tsn::ChunkForwardTsnStream;
 use crate::chunk::chunk_payload_data::PayloadProtocolIdentifier;
 use crate::param::param_reconfig_response::{ParamReconfigResponse, ReconfigResult};
-use crate::stream::Stream;
+use crate::stream::{ReliabilityType, Stream};
 use bytes::Bytes;
 use rand::random;
 use std::collections::{HashMap, VecDeque};
@@ -268,7 +268,7 @@ impl Association {
             };
 
             self.control_queue.push_back(outbound);
-            //TODO:self.awake_write_loop();
+            self.awake_write_loop();
 
             Ok(())
         } else {
@@ -289,7 +289,8 @@ impl Association {
             };
 
             self.control_queue.push_back(outbound);
-            //TODO:self.awake_write_loop();
+            self.awake_write_loop();
+
             Ok(())
         } else {
             Err(Error::ErrCookieEchoNotStoredToSend)
@@ -297,7 +298,7 @@ impl Association {
     }
 
     /// handle_inbound parses incoming raw packets
-    fn handle_inbound(&mut self, raw: &Bytes) -> Result<()> {
+    fn handle_inbound(&mut self, raw: &Bytes, now: Instant) -> Result<()> {
         let p = match Packet::unmarshal(raw) {
             Ok(p) => p,
             Err(err) => {
@@ -314,7 +315,7 @@ impl Association {
         self.handle_chunk_start();
 
         for c in &p.chunks {
-            self.handle_chunk(&p, c)?;
+            self.handle_chunk(&p, c, now)?;
         }
 
         self.handle_chunk_end();
@@ -333,7 +334,7 @@ impl Association {
             //TODO:if let Some(ack_timer) = &mut self.ack_timer {
             //    ack_timer.stop();
             //}
-            //TODO:self.awake_write_loop();
+            self.awake_write_loop();
         } else if self.delayed_ack_triggered {
             // Will send delayed ack in the next ack timeout
             self.ack_state = AckState::Delay;
@@ -344,7 +345,12 @@ impl Association {
     }
 
     #[allow(clippy::borrowed_box)]
-    fn handle_chunk(&mut self, p: &Packet, chunk: &Box<dyn Chunk + Send + Sync>) -> Result<()> {
+    fn handle_chunk(
+        &mut self,
+        p: &Packet,
+        chunk: &Box<dyn Chunk + Send + Sync>,
+        now: Instant,
+    ) -> Result<()> {
         chunk.check()?;
         let chunk_any = chunk.as_any();
         let packets = if let Some(c) = chunk_any.downcast_ref::<ChunkInit>() {
@@ -366,7 +372,7 @@ impl Association {
         } else if let Some(c) = chunk_any.downcast_ref::<ChunkPayloadData>() {
             self.handle_data(c)?
         } else if let Some(c) = chunk_any.downcast_ref::<ChunkSelectiveAck>() {
-            self.handle_sack(c)?
+            self.handle_sack(c, now)?
         } else if let Some(c) = chunk_any.downcast_ref::<ChunkReconfig>() {
             self.handle_reconfig(c)?
         } else if let Some(c) = chunk_any.downcast_ref::<ChunkForwardTsn>() {
@@ -384,7 +390,7 @@ impl Association {
         if !packets.is_empty() {
             let mut buf: VecDeque<_> = packets.into_iter().collect();
             self.control_queue.append(&mut buf);
-            //TODO: self.awake_write_loop();
+            self.awake_write_loop();
         }
 
         Ok(())
@@ -709,7 +715,7 @@ impl Association {
         self.handle_peer_last_tsn_and_acknowledgement(immediate_sack)
     }
 
-    fn handle_sack(&mut self, d: &ChunkSelectiveAck) -> Result<Vec<Packet>> {
+    fn handle_sack(&mut self, d: &ChunkSelectiveAck, now: Instant) -> Result<Vec<Packet>> {
         trace!(
             "[{}] {}, SACK: cumTSN={} a_rwnd={}",
             self.side,
@@ -745,7 +751,7 @@ impl Association {
         }
 
         // Process selective ack
-        let (bytes_acked_per_stream, htna) = self.process_selective_ack(d)?;
+        let (bytes_acked_per_stream, htna) = self.process_selective_ack(d, now)?;
 
         let mut total_bytes_acked = 0;
         for n_bytes_acked in bytes_acked_per_stream.values() {
@@ -822,7 +828,7 @@ impl Association {
                     self.cumulative_tsn_ack_point
                 );
             }
-            //TODO: self.awake_write_loop();
+            self.awake_write_loop();
         }
 
         self.postprocess_sack(state, cum_tsn_ack_point_advanced);
@@ -889,7 +895,7 @@ impl Association {
             /*TODO: if let Some(ack_timer) = &mut self.ack_timer {
                 ack_timer.stop();
             }*/
-            //TODO: self.awake_write_loop();
+            self.awake_write_loop();
             return Ok(vec![]);
         }
 
@@ -941,7 +947,7 @@ impl Association {
                 self.will_send_shutdown_ack = true;
                 self.set_state(AssociationState::ShutdownAckSent);
 
-                //TODO: self.awake_write_loop();
+                self.awake_write_loop();
             }
         } else if state == AssociationState::ShutdownSent {
             // self.cumulative_tsn_ack_point = c.cumulative_tsn_ack
@@ -949,7 +955,7 @@ impl Association {
             self.will_send_shutdown_ack = true;
             self.set_state(AssociationState::ShutdownAckSent);
 
-            //TODO: self.awake_write_loop();
+            self.awake_write_loop();
         }
 
         Ok(vec![])
@@ -963,7 +969,7 @@ impl Association {
             }*/
             self.will_send_shutdown_complete = true;
 
-            //TODO: self.awake_write_loop();
+            self.awake_write_loop();
         }
 
         Ok(vec![])
@@ -1059,7 +1065,11 @@ impl Association {
         }
     }
 
-    fn process_selective_ack(&mut self, d: &ChunkSelectiveAck) -> Result<(HashMap<u16, i64>, u32)> {
+    fn process_selective_ack(
+        &mut self,
+        d: &ChunkSelectiveAck,
+        now: Instant,
+    ) -> Result<(HashMap<u16, i64>, u32)> {
         let mut bytes_acked_per_stream = HashMap::new();
 
         // New ack point, so pop all ACKed packets from inflight_queue
@@ -1102,15 +1112,19 @@ impl Association {
                     //        chunk or for a later instance)
                     if c.nsent == 1 && sna32gte(c.tsn, self.min_tsn2measure_rtt) {
                         self.min_tsn2measure_rtt = self.my_next_tsn;
-                        let rtt = Instant::now().duration_since(c.since);
-                        let srtt = self.rto_mgr.set_new_rtt(rtt.as_millis() as u64);
-                        trace!(
-                            "[{}] SACK: measured-rtt={} srtt={} new-rto={}",
-                            self.side,
-                            rtt.as_millis(),
-                            srtt,
-                            self.rto_mgr.get_rto()
-                        );
+                        if let Some(since) = &c.since {
+                            let rtt = now.duration_since(*since);
+                            let srtt = self.rto_mgr.set_new_rtt(rtt.as_millis() as u64);
+                            trace!(
+                                "[{}] SACK: measured-rtt={} srtt={} new-rto={}",
+                                self.side,
+                                rtt.as_millis(),
+                                srtt,
+                                self.rto_mgr.get_rto()
+                            );
+                        } else {
+                            error!("[{}] invalid c.since", self.side);
+                        }
                     }
                 }
 
@@ -1156,15 +1170,19 @@ impl Association {
 
                         if c.nsent == 1 {
                             self.min_tsn2measure_rtt = self.my_next_tsn;
-                            let rtt = Instant::now().duration_since(c.since);
-                            let srtt = self.rto_mgr.set_new_rtt(rtt.as_millis() as u64);
-                            trace!(
-                                "[{}] SACK: measured-rtt={} srtt={} new-rto={}",
-                                self.side,
-                                rtt.as_millis(),
-                                srtt,
-                                self.rto_mgr.get_rto()
-                            );
+                            if let Some(since) = &c.since {
+                                let rtt = now.duration_since(*since);
+                                let srtt = self.rto_mgr.set_new_rtt(rtt.as_millis() as u64);
+                                trace!(
+                                    "[{}] SACK: measured-rtt={} srtt={} new-rto={}",
+                                    self.side,
+                                    rtt.as_millis(),
+                                    srtt,
+                                    self.rto_mgr.get_rto()
+                                );
+                            } else {
+                                error!("[{}] invalid c.since", self.side);
+                            }
                         }
 
                         if sna32lt(htna, tsn) {
@@ -1348,7 +1366,7 @@ impl Association {
         }
 
         if should_awake_write_loop {
-            //TODO: self.awake_write_loop();
+            self.awake_write_loop();
         }
     }
 
@@ -1454,7 +1472,7 @@ impl Association {
 
     /// gather_outbound gathers outgoing packets. The returned bool value set to
     /// false means the association should be closed down after the final send.
-    fn gather_outbound(&mut self) -> (Vec<Bytes>, bool) {
+    fn gather_outbound(&mut self, now: Instant) -> (Vec<Bytes>, bool) {
         let mut raw_packets = vec![];
 
         if !self.control_queue.is_empty() {
@@ -1471,9 +1489,9 @@ impl Association {
         let state = self.get_state();
         match state {
             AssociationState::Established => {
-                raw_packets = self.gather_data_packets_to_retransmit(raw_packets);
-                raw_packets = self.gather_outbound_data_and_reconfig_packets(raw_packets);
-                raw_packets = self.gather_outbound_fast_retransmission_packets(raw_packets);
+                raw_packets = self.gather_data_packets_to_retransmit(raw_packets, now);
+                raw_packets = self.gather_outbound_data_and_reconfig_packets(raw_packets, now);
+                raw_packets = self.gather_outbound_fast_retransmission_packets(raw_packets, now);
                 raw_packets = self.gather_outbound_sack_packets(raw_packets);
                 raw_packets = self.gather_outbound_forward_tsn_packets(raw_packets);
                 (raw_packets, true)
@@ -1481,8 +1499,8 @@ impl Association {
             AssociationState::ShutdownPending
             | AssociationState::ShutdownSent
             | AssociationState::ShutdownReceived => {
-                raw_packets = self.gather_data_packets_to_retransmit(raw_packets);
-                raw_packets = self.gather_outbound_fast_retransmission_packets(raw_packets);
+                raw_packets = self.gather_data_packets_to_retransmit(raw_packets, now);
+                raw_packets = self.gather_outbound_fast_retransmission_packets(raw_packets, now);
                 raw_packets = self.gather_outbound_sack_packets(raw_packets);
                 self.gather_outbound_shutdown_packets(raw_packets)
             }
@@ -1491,8 +1509,12 @@ impl Association {
         }
     }
 
-    fn gather_data_packets_to_retransmit(&mut self, mut raw_packets: Vec<Bytes>) -> Vec<Bytes> {
-        for p in &self.get_data_packets_to_retransmit() {
+    fn gather_data_packets_to_retransmit(
+        &mut self,
+        mut raw_packets: Vec<Bytes>,
+        now: Instant,
+    ) -> Vec<Bytes> {
+        for p in &self.get_data_packets_to_retransmit(now) {
             if let Ok(raw) = p.marshal() {
                 raw_packets.push(raw);
             } else {
@@ -1509,10 +1531,11 @@ impl Association {
     fn gather_outbound_data_and_reconfig_packets(
         &mut self,
         mut raw_packets: Vec<Bytes>,
+        now: Instant,
     ) -> Vec<Bytes> {
         // Pop unsent data chunks from the pending queue to send as much as
         // cwnd and rwnd allow.
-        let (chunks, sis_to_reset) = self.pop_pending_data_chunks_to_send();
+        let (chunks, sis_to_reset) = self.pop_pending_data_chunks_to_send(now);
         if !chunks.is_empty() {
             // Start timer. (noop if already started)
             trace!("[{}] T3-rtx timer start (pt1)", self.side);
@@ -1595,6 +1618,7 @@ impl Association {
     fn gather_outbound_fast_retransmission_packets(
         &mut self,
         mut raw_packets: Vec<Bytes>,
+        now: Instant,
     ) -> Vec<Bytes> {
         if self.will_retransmit_fast {
             self.will_retransmit_fast = false;
@@ -1633,8 +1657,14 @@ impl Association {
                     break; // end of pending data
                 }
 
-                if let Some(c) = self.inflight_queue.get(tsn) {
-                    self.check_partial_reliability_status(c);
+                if let Some(c) = self.inflight_queue.get_mut(tsn) {
+                    Association::check_partial_reliability_status(
+                        c,
+                        now,
+                        self.use_forward_tsn,
+                        self.side,
+                        &self.streams,
+                    );
                     to_fast_retrans.push(Box::new(c.clone()));
                     trace!(
                         "[{}] fast-retransmit: tsn={} sent={} htna={}",
@@ -1759,7 +1789,7 @@ impl Association {
 
     /// get_data_packets_to_retransmit is called when T3-rtx is timed out and retransmit outstanding data chunks
     /// that are not acked or abandoned yet.
-    fn get_data_packets_to_retransmit(&mut self) -> Vec<Packet> {
+    fn get_data_packets_to_retransmit(&mut self, now: Instant) -> Vec<Packet> {
         let awnd = std::cmp::min(self.cwnd, self.rwnd);
         let mut chunks = vec![];
         let mut bytes_to_send = 0;
@@ -1790,8 +1820,14 @@ impl Association {
                 break; // end of pending data
             }
 
-            if let Some(c) = self.inflight_queue.get(tsn) {
-                self.check_partial_reliability_status(c);
+            if let Some(c) = self.inflight_queue.get_mut(tsn) {
+                Association::check_partial_reliability_status(
+                    c,
+                    now,
+                    self.use_forward_tsn,
+                    self.side,
+                    &self.streams,
+                );
 
                 trace!(
                     "[{}] retransmitting tsn={} ssn={} sent={}",
@@ -1811,7 +1847,10 @@ impl Association {
 
     /// pop_pending_data_chunks_to_send pops chunks from the pending queues as many as
     /// the cwnd and rwnd allows to send.
-    fn pop_pending_data_chunks_to_send(&mut self) -> (Vec<ChunkPayloadData>, Vec<u16>) {
+    fn pop_pending_data_chunks_to_send(
+        &mut self,
+        now: Instant,
+    ) -> (Vec<ChunkPayloadData>, Vec<u16>) {
         let mut chunks = vec![];
         let mut sis_to_reset = vec![]; // stream identifiers to reset
         if !self.pending_queue.is_empty() {
@@ -1853,9 +1892,11 @@ impl Association {
 
                 self.rwnd -= data_len as u32;
 
-                if let Some(chunk) =
-                    self.move_pending_data_chunk_to_inflight_queue(beginning_fragment, unordered)
-                {
+                if let Some(chunk) = self.move_pending_data_chunk_to_inflight_queue(
+                    beginning_fragment,
+                    unordered,
+                    now,
+                ) {
                     chunks.push(chunk);
                 }
             }
@@ -1866,9 +1907,11 @@ impl Association {
                 if let Some(c) = self.pending_queue.peek() {
                     let (beginning_fragment, unordered) = (c.beginning_fragment, c.unordered);
 
-                    if let Some(chunk) = self
-                        .move_pending_data_chunk_to_inflight_queue(beginning_fragment, unordered)
-                    {
+                    if let Some(chunk) = self.move_pending_data_chunk_to_inflight_queue(
+                        beginning_fragment,
+                        unordered,
+                        now,
+                    ) {
                         chunks.push(chunk);
                     }
                 }
@@ -1923,8 +1966,14 @@ impl Association {
         rsn
     }
 
-    fn check_partial_reliability_status(&self, c: &ChunkPayloadData) {
-        if !self.use_forward_tsn {
+    fn check_partial_reliability_status(
+        c: &mut ChunkPayloadData,
+        now: Instant,
+        use_forward_tsn: bool,
+        side: Side,
+        streams: &HashMap<u16, Arc<Stream>>,
+    ) {
+        if !use_forward_tsn {
             return;
         }
 
@@ -1938,38 +1987,43 @@ impl Association {
         }
 
         // PR-SCTP
-        if let Some(s) = self.streams.get(&c.stream_identifier) {
+        if let Some(s) = streams.get(&c.stream_identifier) {
             /*TODO: let reliability_type: ReliabilityType =
                 s.reliability_type.load(Ordering::SeqCst).into();
-            let reliability_value = s.reliability_value.load(Ordering::SeqCst);
+            let reliability_value = s.reliability_value.load(Ordering::SeqCst);*/
+            let reliability_type = ReliabilityType::Rexmit;
+            let reliability_value = 0;
 
             if reliability_type == ReliabilityType::Rexmit {
                 if c.nsent >= reliability_value {
                     c.set_abandoned(true);
-                    log::trace!(
+                    trace!(
                         "[{}] marked as abandoned: tsn={} ppi={} (remix: {})",
-                        self.name,
+                        side,
                         c.tsn,
                         c.payload_type,
                         c.nsent
                     );
                 }
             } else if reliability_type == ReliabilityType::Timed {
-                if let Ok(elapsed) = SystemTime::now().duration_since(c.since) {
+                if let Some(since) = &c.since {
+                    let elapsed = now.duration_since(*since);
                     if elapsed.as_millis() as u32 >= reliability_value {
                         c.set_abandoned(true);
-                        log::trace!(
+                        trace!(
                             "[{}] marked as abandoned: tsn={} ppi={} (timed: {:?})",
-                            self.name,
+                            side,
                             c.tsn,
                             c.payload_type,
                             elapsed
                         );
                     }
+                } else {
+                    error!("[{}] invalid c.since", side);
                 }
-            }*/
+            }
         } else {
-            error!("[{}] stream {} not found)", self.side, c.stream_identifier);
+            error!("[{}] stream {} not found)", side, c.stream_identifier);
         }
     }
 
@@ -2034,6 +2088,7 @@ impl Association {
         &mut self,
         beginning_fragment: bool,
         unordered: bool,
+        now: Instant,
     ) -> Option<ChunkPayloadData> {
         if let Some(mut c) = self.pending_queue.pop(beginning_fragment, unordered) {
             // Mark all fragements are in-flight now
@@ -2044,10 +2099,16 @@ impl Association {
             // Assign TSN
             c.tsn = self.generate_next_tsn();
 
-            c.since = Instant::now(); // use to calculate RTT and also for maxPacketLifeTime
+            c.since = Some(now); // use to calculate RTT and also for maxPacketLifeTime
             c.nsent = 1; // being sent for the first time
 
-            self.check_partial_reliability_status(&c);
+            Association::check_partial_reliability_status(
+                &mut c,
+                now,
+                self.use_forward_tsn,
+                self.side,
+                &self.streams,
+            );
 
             trace!(
                 "[{}] sending ppi={} tsn={} ssn={} sent={} len={} ({},{})",
@@ -2087,7 +2148,7 @@ impl Association {
         };
 
         self.pending_queue.push(c);
-        //TODO: self.awake_write_loop();
+        self.awake_write_loop();
 
         Ok(())
     }
@@ -2104,7 +2165,7 @@ impl Association {
             self.pending_queue.push(c);
         }
 
-        //TODO: self.awake_write_loop();
+        self.awake_write_loop();
         Ok(())
     }
 
@@ -2112,5 +2173,13 @@ impl Association {
     /// This is used only by testing.
     fn buffered_amount(&self) -> usize {
         self.pending_queue.get_num_bytes() + self.inflight_queue.get_num_bytes()
+    }
+
+    fn awake_write_loop(&self) {
+        //TODO: just empty fn
+        //log::debug!("[{}] awake_write_loop_ch.notify_one", self.name);
+        /*if let Some(awake_write_loop_ch) = &self.awake_write_loop_ch {
+            let _ = awake_write_loop_ch.try_send(());
+        }*/
     }
 }

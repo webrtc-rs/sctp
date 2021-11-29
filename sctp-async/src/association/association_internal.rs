@@ -72,13 +72,6 @@ impl AssociationInternal {
         }
     }
 
-    fn awake_write_loop(&self) {
-        //log::debug!("[{}] awake_write_loop_ch.notify_one", self.name);
-        if let Some(awake_write_loop_ch) = &self.awake_write_loop_ch {
-            let _ = awake_write_loop_ch.try_send(());
-        }
-    }
-
     /// unregister_stream un-registers a stream from the association
     /// The caller should hold the association write lock.
     fn unregister_stream(&mut self, stream_identifier: u16) {
