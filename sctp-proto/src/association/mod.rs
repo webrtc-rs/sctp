@@ -25,7 +25,7 @@ use crate::queue::{
     control_queue::ControlQueue, payload_queue::PayloadQueue, pending_queue::PendingQueue,
 };
 use crate::shared::AssociationId;
-use crate::util::{sna16lt, sna32gt, sna32gte, sna32lt, sna32lte, AssociationIdGenerator};
+use crate::util::{sna16lt, sna32gt, sna32gte, sna32lt, sna32lte};
 use crate::Side;
 
 use crate::association::timer::{RtoManager, Timer, TimerTable, ACK_INTERVAL};
@@ -91,6 +91,8 @@ pub struct Association {
     reconfig_requests: HashMap<u32, ParamOutgoingResetRequest>,
 
     // Non-RFC internal data
+    remote_addr: Option<SocketAddr>,
+    local_ip: Option<IpAddr>,
     source_port: u16,
     destination_port: u16,
     my_max_num_inbound_streams: u16,
@@ -146,12 +148,9 @@ impl Association {
     pub(crate) fn new(
         server_config: Option<Arc<ServerConfig>>,
         config: Arc<TransportConfig>,
-        init_cid: AssociationId,
-        loc_cid: AssociationId,
-        rem_cid: AssociationId,
-        remote: SocketAddr,
+        local_aid: AssociationId,
+        remote_addr: SocketAddr,
         local_ip: Option<IpAddr>,
-        cid_gen: &dyn AssociationIdGenerator,
         now: Instant,
     ) -> Self {
         let side = if server_config.is_some() {
@@ -183,7 +182,10 @@ impl Association {
 
             mtu,
             cwnd,
-            my_verification_tag: random::<u32>(),
+            remote_addr: Some(remote_addr),
+            local_ip,
+
+            my_verification_tag: local_aid,
             my_next_tsn: tsn,
             my_next_rsn: tsn,
             min_tsn2measure_rtt: tsn,
@@ -306,7 +308,7 @@ impl Association {
     /// unregister_stream un-registers a stream from the association
     /// The caller should hold the association write lock.
     fn unregister_stream(&mut self, stream_identifier: u16) {
-        if let Some(s) = self.streams.remove(&stream_identifier) {
+        if let Some(_s) = self.streams.remove(&stream_identifier) {
             /*TODO: s.closed.store(true, Ordering::SeqCst);
             s.read_notifier.notify_waiters();*/
         }
@@ -770,7 +772,7 @@ impl Association {
         let immediate_sack = d.immediate_sack;
 
         if stream_handle_data {
-            if let Some(s) = self.streams.get_mut(&d.stream_identifier) {
+            if let Some(_s) = self.streams.get_mut(&d.stream_identifier) {
                 //TODO: s.handle_data(d.clone());
             }
         }
@@ -835,11 +837,11 @@ impl Association {
             self.on_cumulative_tsn_ack_point_advanced(total_bytes_acked, now);
         }
 
-        for (si, n_bytes_acked) in &bytes_acked_per_stream {
-            if let Some(s) = self.streams.get_mut(si) {
+        /*TODO:for (si, n_bytes_acked) in &bytes_acked_per_stream {
+            if let Some(_s) = self.streams.get_mut(si) {
                 //TODO: s.on_buffer_released(*n_bytes_acked);
             }
-        }
+        }*/
 
         // New rwnd value
         // RFC 4960 sec 6.2.1.  Processing a Received SACK
@@ -980,7 +982,7 @@ impl Association {
         // corresponding streams so that the abandoned chunks can be removed
         // from the reassemblyQueue.
         for forwarded in &c.streams {
-            if let Some(s) = self.streams.get_mut(&forwarded.identifier) {
+            if let Some(_s) = self.streams.get_mut(&forwarded.identifier) {
                 //TODO: s.handle_forward_tsn_for_ordered(forwarded.sequence);
             }
         }
@@ -990,7 +992,7 @@ impl Association {
         // Therefore, we need to broadcast this event to all existing streams for
         // unordered chunks.
         // See https://github.com/pion/sctp/issues/106
-        for s in self.streams.values_mut() {
+        for _s in self.streams.values_mut() {
             //TODO: s.handle_forward_tsn_for_unordered(c.new_cumulative_tsn);
         }
 
@@ -1430,7 +1432,7 @@ impl Association {
                 self.side, p.sender_last_tsn, self.peer_last_tsn
             );
             for id in &p.stream_identifiers {
-                if let Some(s) = self.streams.get(id) {
+                if let Some(_s) = self.streams.get(id) {
                     //TODO: self.unregister_stream(s.stream_identifier);
                 }
             }
@@ -1465,7 +1467,7 @@ impl Association {
     }
 
     /// create_stream creates a stream. The caller should hold the lock and check no stream exists for this id.
-    fn create_stream(&mut self, stream_identifier: u16, accept: bool) -> Option<Arc<Stream>> {
+    fn create_stream(&mut self, stream_identifier: u16, _accept: bool) -> Option<Arc<Stream>> {
         let s = Arc::new(Stream::new(
             /*TODO:format!("{}:{}", stream_identifier, self.name),
             stream_identifier,
@@ -1509,8 +1511,8 @@ impl Association {
     }
 
     fn get_my_receiver_window_credit(&self) -> u32 {
-        let mut bytes_queued = 0;
-        for s in self.streams.values() {
+        let bytes_queued = 0;
+        for _s in self.streams.values() {
             //TODO: bytes_queued += s.get_num_bytes_in_reassembly_queue().await as u32;
         }
 
@@ -2037,7 +2039,7 @@ impl Association {
         }
 
         // PR-SCTP
-        if let Some(s) = streams.get(&c.stream_identifier) {
+        if let Some(_s) = streams.get(&c.stream_identifier) {
             /*TODO: let reliability_type: ReliabilityType =
                 s.reliability_type.load(Ordering::SeqCst).into();
             let reliability_value = s.reliability_value.load(Ordering::SeqCst);*/

@@ -14,9 +14,9 @@ use crate::shared::{
     AssociationEvent, AssociationEventInner, AssociationId, EndpointEvent, EndpointEventInner,
     IssuedAid,
 };
-use crate::util::{AssociationIdGenerator, RandomAssociationIdGenerator};
 use crate::{EcnCodepoint, Transmit};
 
+use crate::util::{AssociationIdGenerator, RandomAssociationIdGenerator};
 use bytes::BytesMut; //{BufMut, Bytes, };
 use fxhash::FxHashMap;
 use rand::{rngs::StdRng, /*Rng, RngCore,*/ SeedableRng};
@@ -32,23 +32,15 @@ use tracing::trace; //{debug, trace, warn};
 pub struct Endpoint {
     rng: StdRng,
     transmits: VecDeque<Transmit>,
-    /// Identifies connections based on the initial DCID the peer utilized
+    /// Identifies connections based on the INIT Dst AID the peer utilized
     ///
     /// Uses a standard `HashMap` to protect against hash collision attacks.
-    connection_ids_initial: HashMap<AssociationId, AssociationHandle>,
+    connection_ids_init: HashMap<AssociationId, AssociationHandle>,
     /// Identifies connections based on locally created CIDs
     ///
     /// Uses a cheaper hash function since keys are locally created
     connection_ids: FxHashMap<AssociationId, AssociationHandle>,
-    /// Identifies connections with zero-length CIDs
-    ///
-    /// Uses a standard `HashMap` to protect against hash collision attacks.
-    connection_remotes: HashMap<SocketAddr, AssociationHandle>,
-    /// Reset tokens provided by the peer for the CID each connection is currently sending to
-    ///
-    /// Incoming stateless resets do not have correct CIDs, so we need this to identify the correct
-    /// recipient, if any.
-    //TODO: connection_reset_tokens: ResetTokenTable,
+
     connections: Slab<AssociationMeta>,
     local_cid_generator: Box<dyn AssociationIdGenerator>,
     config: Arc<EndpointConfig>,
@@ -67,10 +59,8 @@ impl Endpoint {
         Self {
             rng: StdRng::from_entropy(),
             transmits: VecDeque::new(),
-            connection_ids_initial: HashMap::default(),
+            connection_ids_init: HashMap::default(),
             connection_ids: FxHashMap::default(),
-            connection_remotes: HashMap::default(),
-            //TODO: connection_reset_tokens: ResetTokenTable::default(),
             connections: Slab::new(),
             local_cid_generator: (config.aid_generator_factory.as_ref())(),
             reject_new_connections: false,
@@ -103,14 +93,6 @@ impl Endpoint {
             NeedIdentifiers(now, n) => {
                 return Some(self.send_new_identifiers(now, ch, n));
             }
-            /*TODO: ResetToken(remote, token) => {
-                if let Some(old) = self.connections[ch].reset_token.replace((remote, token)) {
-                    self.connection_reset_tokens.remove(old.0, old.1);
-                }
-                if self.connection_reset_tokens.insert(remote, token, ch) {
-                    warn!("duplicate reset token");
-                }
-            }*/
             RetireAssociationId(now, seq, allow_more_aids) => {
                 if let Some(cid) = self.connections[ch].loc_cids.remove(&seq) {
                     trace!("peer retired AID {}: {}", seq, cid);
@@ -122,14 +104,10 @@ impl Endpoint {
             }
             Drained => {
                 let conn = self.connections.remove(ch.0);
-                self.connection_ids_initial.remove(&conn.init_cid);
+                self.connection_ids_init.remove(&conn.init_cid);
                 for cid in conn.loc_cids.values() {
                     self.connection_ids.remove(cid);
                 }
-                self.connection_remotes.remove(&conn.initial_remote);
-                /*TODO: if let Some((remote, token)) = conn.reset_token {
-                    self.connection_reset_tokens.remove(remote, token);
-                }*/
             }
         }
         None
@@ -138,11 +116,11 @@ impl Endpoint {
     /// Process an incoming UDP datagram
     pub fn handle(
         &mut self,
-        now: Instant,
-        remote: SocketAddr,
-        local_ip: Option<IpAddr>,
-        ecn: Option<EcnCodepoint>,
-        data: BytesMut,
+        _now: Instant,
+        _remote: SocketAddr,
+        _local_ip: Option<IpAddr>,
+        _ecn: Option<EcnCodepoint>,
+        _data: BytesMut,
     ) -> Option<(AssociationHandle, DatagramEvent)> {
         /*let datagram_len = data.len();
         let (first_decode, remaining) = match PartialDecode::new(
@@ -210,21 +188,6 @@ impl Endpoint {
                 } else {
                     None
                 }
-            })
-            .or_else(|| {
-                if self.local_cid_generator.cid_len() == 0 {
-                    self.connection_remotes.get(&remote)
-                } else {
-                    None
-                }
-            })
-            .or_else(|| {
-                let data = first_decode.data();
-                if data.len() < RESET_TOKEN_SIZE {
-                    return None;
-                }
-                self.connection_reset_tokens
-                    .get(remote, &data[data.len() - RESET_TOKEN_SIZE..])
             })
             .cloned()
         };
@@ -310,7 +273,6 @@ impl Endpoint {
         &mut self,
         config: ClientConfig,
         remote: SocketAddr,
-        server_name: &str,
     ) -> Result<(AssociationHandle, Association), ConnectError> {
         if self.is_full() {
             return Err(ConnectError::TooManyAssociations);
@@ -319,30 +281,15 @@ impl Endpoint {
             return Err(ConnectError::InvalidRemoteAddress(remote));
         }
 
-        let remote_id = RandomAssociationIdGenerator::new().generate_aid();
-        trace!(initial_dcid = %remote_id);
-
-        let loc_cid = self.new_aid();
-        /*TODO: let params = TransportParameters::new(
-            &config.transport,
-            &self.config,
-            self.local_cid_generator.as_ref(),
-            loc_cid,
-            None,
-        );
-        let tls = config
-            .crypto
-            .start_session(config.version, server_name, &params)?;*/
+        let remote_aid = RandomAssociationIdGenerator::new().generate_aid();
+        let local_aid = self.new_aid();
 
         let (ch, conn) = self.add_connection(
-            //config.version,
-            remote_id,
-            loc_cid,
-            remote_id,
+            remote_aid,
+            local_aid,
             remote,
             None,
             Instant::now(),
-            //tls,
             None,
             config.transport,
         );
@@ -363,11 +310,7 @@ impl Endpoint {
             meta.cids_issued += 1;
             let sequence = meta.cids_issued;
             meta.loc_cids.insert(sequence, id);
-            ids.push(IssuedAid {
-                sequence,
-                id,
-                //TODO: reset_token: ResetToken::new(&*self.config.reset_key, &id),
-            });
+            ids.push(IssuedAid { sequence, id });
         }
         AssociationEvent(AssociationEventInner::NewIdentifiers(ids, now))
     }
@@ -383,45 +326,32 @@ impl Endpoint {
 
     fn add_connection(
         &mut self,
-        //version: u32,
-        init_cid: AssociationId,
-        loc_cid: AssociationId,
-        rem_cid: AssociationId,
-        remote: SocketAddr,
+        remote_aid: AssociationId,
+        local_aid: AssociationId,
+        remote_addr: SocketAddr,
         local_ip: Option<IpAddr>,
         now: Instant,
-        //tls: Box<dyn crypto::Session>,
         server_config: Option<Arc<ServerConfig>>,
         transport_config: Arc<TransportConfig>,
     ) -> (AssociationHandle, Association) {
         let conn = Association::new(
             server_config,
             transport_config,
-            init_cid,
-            loc_cid,
-            rem_cid,
-            remote,
+            local_aid,
+            remote_addr,
             local_ip,
-            //tls,
-            self.local_cid_generator.as_ref(),
             now,
-            //version,
         );
 
         let id = self.connections.insert(AssociationMeta {
-            init_cid,
+            init_cid: remote_aid,
             cids_issued: 0,
-            loc_cids: iter::once((0, loc_cid)).collect(),
-            initial_remote: remote,
-            //reset_token: None,
+            loc_cids: iter::once((0, local_aid)).collect(),
+            initial_remote: remote_addr,
         });
 
         let ch = AssociationHandle(id);
-        //TODO: match self.local_cid_generator.cid_len() {
-        //    0 => self.connection_remotes.insert(remote, ch),
-        //    _ => ,
-        //};
-        self.connection_ids.insert(loc_cid, ch);
+        self.connection_ids.insert(local_aid, ch);
 
         (ch, conn)
     }
@@ -453,9 +383,6 @@ pub(crate) struct AssociationMeta {
     /// Only needed to support connections with zero-length CIDs, which cannot migrate, so we don't
     /// bother keeping it up to date.
     initial_remote: SocketAddr,
-    // Reset token provided by the peer for the CID we're currently sending to, and the address
-    // being sent to
-    // TODO: reset_token: Option<(SocketAddr, ResetToken)>,
 }
 
 /// Internal identifier for a `Connection` currently associated with an endpoint

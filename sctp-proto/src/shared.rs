@@ -44,8 +44,6 @@ impl EndpointEvent {
 pub(crate) enum EndpointEventInner {
     /// The association has been drained
     Drained,
-    /// The reset token and/or address eligible for generating resets has been updated
-    //TODO: ResetToken(SocketAddr, ResetToken),
     /// The association needs association identifiers
     NeedIdentifiers(Instant, u64),
     /// Stop routing Association ID for this sequence number to the Association
@@ -89,5 +87,4 @@ impl EcnCodepoint {
 pub struct IssuedAid {
     pub sequence: u64,
     pub id: AssociationId,
-    //TODO: pub reset_token: ResetToken,
 }
