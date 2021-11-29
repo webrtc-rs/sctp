@@ -151,10 +151,8 @@ impl Association {
         rem_cid: AssociationId,
         remote: SocketAddr,
         local_ip: Option<IpAddr>,
-        //crypto: Box<dyn crypto::Session>,
         cid_gen: &dyn AssociationIdGenerator,
         now: Instant,
-        //version: u32,
     ) -> Self {
         let side = if server_config.is_some() {
             Side::Server
@@ -164,9 +162,8 @@ impl Association {
 
         let mtu = INITIAL_MTU;
         // RFC 4690 Sec 7.2.1
-        //  o  The initial cwnd before DATA transmission or after a sufficiently
-        //     long idle period MUST be set to min(4*MTU, max (2*MTU, 4380
-        //     bytes)).
+        // The initial cwnd before DATA transmission or after a sufficiently
+        // long idle period MUST be set to min(4*MTU, max (2*MTU, 4380bytes)).
         let cwnd = std::cmp::min(4 * mtu, std::cmp::max(2 * mtu, 4380));
         let mut tsn = random::<u32>();
         if tsn == 0 {
@@ -192,7 +189,8 @@ impl Association {
             min_tsn2measure_rtt: tsn,
             cumulative_tsn_ack_point: tsn - 1,
             advanced_peer_tsn_ack_point: tsn - 1,
-            //silent_error: Some(Error::ErrSilentlyDiscard),
+            silent_error: Some(Error::ErrSilentlyDiscard),
+
             ..Default::default()
         };
 
@@ -210,11 +208,79 @@ impl Association {
             this.set_state(AssociationState::CookieWait);
             this.stored_init = Some(init);
             let _ = this.send_init();
-            let rto = this.rto_mgr.get_rto();
-            this.timers.start(Timer::T1Init, now, rto);
+            this.timers
+                .start(Timer::T1Init, now, this.rto_mgr.get_rto());
         }
 
         this
+    }
+
+    /// Shutdown initiates the shutdown sequence. The method blocks until the
+    /// shutdown sequence is completed and the connection is closed, or until the
+    /// passed context is done, in which case the context's error is returned.
+    pub(crate) fn shutdown(&mut self) -> Result<()> {
+        debug!("[{}] closing association..", self.side);
+
+        let state = self.get_state();
+        if state != AssociationState::Established {
+            return Err(Error::ErrShutdownNonEstablished);
+        }
+
+        // Attempt a graceful shutdown.
+        self.set_state(AssociationState::ShutdownPending);
+
+        if self.inflight_queue_length == 0 {
+            // No more outstanding, send shutdown.
+            self.will_send_shutdown = true;
+            self.awake_write_loop();
+            self.set_state(AssociationState::ShutdownSent);
+        }
+
+        Ok(())
+    }
+
+    /// Close ends the SCTP Association and cleans up any state
+    pub(crate) fn close(&mut self) -> Result<()> {
+        if self.get_state() != AssociationState::Closed {
+            self.set_state(AssociationState::Closed);
+
+            debug!("[{}] closing association..", self.side);
+
+            self.close_all_timers();
+
+            for si in self.streams.keys().cloned().collect::<Vec<u16>>() {
+                self.unregister_stream(si);
+            }
+
+            debug!("[{}] association closed", self.side);
+            debug!(
+                "[{}] stats nDATAs (in) : {}",
+                self.side,
+                self.stats.get_num_datas()
+            );
+            debug!(
+                "[{}] stats nSACKs (in) : {}",
+                self.side,
+                self.stats.get_num_sacks()
+            );
+            debug!(
+                "[{}] stats nT3Timeouts : {}",
+                self.side,
+                self.stats.get_num_t3timeouts()
+            );
+            debug!(
+                "[{}] stats nAckTimeouts: {}",
+                self.side,
+                self.stats.get_num_ack_timeouts()
+            );
+            debug!(
+                "[{}] stats nFastRetrans: {}",
+                self.side,
+                self.stats.get_num_fast_retrans()
+            );
+        }
+
+        Ok(())
     }
 
     /// bytes_sent returns the number of bytes sent
@@ -235,6 +301,15 @@ impl Association {
     /// set_max_message_size sets the maximum message size you can send.
     pub(crate) fn set_max_message_size(&mut self, max_message_size: u32) {
         self.max_message_size = max_message_size;
+    }
+
+    /// unregister_stream un-registers a stream from the association
+    /// The caller should hold the association write lock.
+    fn unregister_stream(&mut self, stream_identifier: u16) {
+        if let Some(s) = self.streams.remove(&stream_identifier) {
+            /*TODO: s.closed.store(true, Ordering::SeqCst);
+            s.read_notifier.notify_waiters();*/
+        }
     }
 
     /// set_state atomically sets the state of the Association.
@@ -1355,10 +1430,9 @@ impl Association {
                 self.side, p.sender_last_tsn, self.peer_last_tsn
             );
             for id in &p.stream_identifiers {
-                /*TODO: if let Some(s) = self.streams.get(id) {
-                    let stream_identifier = s.stream_identifier;
-                    self.unregister_stream(stream_identifier);
-                }*/
+                if let Some(s) = self.streams.get(id) {
+                    //TODO: self.unregister_stream(s.stream_identifier);
+                }
             }
             self.reconfig_requests
                 .remove(&p.reconfig_request_sequence_number);
@@ -2152,10 +2226,15 @@ impl Association {
     }
 
     fn awake_write_loop(&self) {
-        //TODO: just empty fn
-        //log::debug!("[{}] awake_write_loop_ch.notify_one", self.name);
-        /*if let Some(awake_write_loop_ch) = &self.awake_write_loop_ch {
+        /*TODO: if let Some(awake_write_loop_ch) = &self.awake_write_loop_ch {
             let _ = awake_write_loop_ch.try_send(());
         }*/
+    }
+
+    fn close_all_timers(&mut self) {
+        // Close all retransmission & ack timers
+        for timer in Timer::VALUES {
+            self.timers.stop(timer);
+        }
     }
 }

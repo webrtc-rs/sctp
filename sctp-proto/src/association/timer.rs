@@ -79,7 +79,7 @@ impl TimerTable {
         let mut failure = false;
         if expired {
             self.retrans[timer as usize] += 1;
-            if self.retrans[timer as usize] >= self.max_retrans[timer as usize] {
+            if self.retrans[timer as usize] > self.max_retrans[timer as usize] {
                 failure = true;
             }
         }
