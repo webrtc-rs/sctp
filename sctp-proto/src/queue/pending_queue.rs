@@ -22,7 +22,7 @@ impl PendingQueue {
     }
 
     pub(crate) fn push(&mut self, c: ChunkPayloadData) {
-        self.n_bytes += 1;
+        self.n_bytes += c.user_data.len();
         if c.unordered {
             self.unordered_queue.push_back(c);
         } else {
@@ -31,22 +31,22 @@ impl PendingQueue {
         self.queue_len += 1;
     }
 
-    pub(crate) fn peek(&self) -> Option<ChunkPayloadData> {
+    pub(crate) fn peek(&self) -> Option<&ChunkPayloadData> {
         if self.selected {
             if self.unordered_is_selected {
-                return self.unordered_queue.get(0).cloned();
+                return self.unordered_queue.get(0);
             } else {
-                return self.ordered_queue.get(0).cloned();
+                return self.ordered_queue.get(0);
             }
         }
 
-        let c = self.unordered_queue.get(0).cloned();
+        let c = self.unordered_queue.get(0);
 
         if c.is_some() {
             return c;
         }
 
-        self.ordered_queue.get(0).cloned()
+        self.ordered_queue.get(0)
     }
 
     pub(crate) fn pop(

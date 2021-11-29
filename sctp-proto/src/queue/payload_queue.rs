@@ -6,11 +6,11 @@ use std::collections::HashMap;
 
 #[derive(Default, Debug)]
 pub(crate) struct PayloadQueue {
-    pub(crate) length: usize,
-    pub(crate) chunk_map: HashMap<u32, ChunkPayloadData>,
+    // length: usize,
+    chunk_map: HashMap<u32, ChunkPayloadData>,
     pub(crate) sorted: Vec<u32>,
-    pub(crate) dup_tsn: Vec<u32>,
-    pub(crate) n_bytes: usize,
+    dup_tsn: Vec<u32>,
+    n_bytes: usize,
 }
 
 impl PayloadQueue {
@@ -36,7 +36,7 @@ impl PayloadQueue {
         self.n_bytes += p.user_data.len();
         self.sorted.push(p.tsn);
         self.chunk_map.insert(p.tsn, p);
-        self.length += 1;
+        //self.length += 1;
         self.update_sorted_keys();
     }
 
@@ -54,7 +54,7 @@ impl PayloadQueue {
         self.n_bytes += p.user_data.len();
         self.sorted.push(p.tsn);
         self.chunk_map.insert(p.tsn, p);
-        self.length += 1;
+        //self.length += 1;
         self.update_sorted_keys();
 
         true
@@ -65,7 +65,7 @@ impl PayloadQueue {
         if !self.sorted.is_empty() && tsn == self.sorted[0] {
             self.sorted.remove(0);
             if let Some(c) = self.chunk_map.remove(&tsn) {
-                self.length += 1;
+                //self.length -= 1;
                 self.n_bytes -= c.user_data.len();
                 return Some(c);
             }
@@ -160,7 +160,7 @@ impl PayloadQueue {
     }
 
     pub(crate) fn len(&self) -> usize {
-        assert_eq!(self.chunk_map.len(), self.length);
+        //assert_eq!(self.chunk_map.len(), self.length);
         self.chunk_map.len()
     }
 
