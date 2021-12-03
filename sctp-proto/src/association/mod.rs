@@ -32,7 +32,7 @@ use crate::association::timer::{RtoManager, Timer, TimerTable, ACK_INTERVAL};
 use crate::chunk::chunk_forward_tsn::ChunkForwardTsnStream;
 use crate::chunk::chunk_payload_data::PayloadProtocolIdentifier;
 use crate::param::param_reconfig_response::{ParamReconfigResponse, ReconfigResult};
-use crate::stream::{ReliabilityType, Stream};
+use crate::stream::{ReliabilityType, Stream, StreamState};
 use bytes::Bytes;
 use rand::random;
 use std::collections::{HashMap, VecDeque};
@@ -128,7 +128,7 @@ pub struct Association {
     // Chunks stored for retransmission
     stored_init: Option<ChunkInit>,
     stored_cookie_echo: Option<ChunkCookieEcho>,
-    streams: HashMap<u16, Stream>,
+    pub(crate) streams: HashMap<u16, StreamState>,
 
     // local error
     silent_error: Option<Error>,
@@ -223,7 +223,7 @@ impl Association {
     pub(crate) fn shutdown(&mut self) -> Result<()> {
         debug!("[{}] closing association..", self.side);
 
-        let state = self.get_state();
+        let state = self.state();
         if state != AssociationState::Established {
             return Err(Error::ErrShutdownNonEstablished);
         }
@@ -243,7 +243,7 @@ impl Association {
 
     /// Close ends the SCTP Association and cleans up any state
     pub(crate) fn close(&mut self) -> Result<()> {
-        if self.get_state() != AssociationState::Closed {
+        if self.state() != AssociationState::Closed {
             self.set_state(AssociationState::Closed);
 
             debug!("[{}] closing association..", self.side);
@@ -289,14 +289,13 @@ impl Association {
     pub(crate) fn open_stream(
         &mut self,
         stream_identifier: u16,
-        _default_payload_type: PayloadProtocolIdentifier,
-    ) -> Result<&Stream> {
+        default_payload_type: PayloadProtocolIdentifier,
+    ) -> Result<Stream<'_>> {
         if self.streams.contains_key(&stream_identifier) {
             return Err(Error::ErrStreamAlreadyExist);
         }
 
-        if let Some(s) = self.create_stream(stream_identifier, false) {
-            //TODO: s.set_default_payload_type(default_payload_type);
+        if let Some(s) = self.create_stream(stream_identifier, false, default_payload_type) {
             Ok(s)
         } else {
             Err(Error::ErrStreamCreateFailed)
@@ -304,7 +303,7 @@ impl Association {
     }
 
     /// accept_stream accepts a stream
-    pub(crate) fn accept_stream(&self) -> Option<&mut Stream> {
+    pub(crate) fn accept_stream(&self) -> Option<Stream<'_>> {
         //TODO: let mut accept_ch_rx = self.accept_ch_rx.lock().await;
         //accept_ch_rx.recv().await
         None
@@ -333,9 +332,9 @@ impl Association {
     /// unregister_stream un-registers a stream from the association
     /// The caller should hold the association write lock.
     fn unregister_stream(&mut self, stream_identifier: u16) {
-        if let Some(_s) = self.streams.remove(&stream_identifier) {
-            /*TODO: s.closed.store(true, Ordering::SeqCst);
-            s.read_notifier.notify_waiters();*/
+        if let Some(mut s) = self.streams.remove(&stream_identifier) {
+            s.closed = true;
+            //TODO: s.read_notifier.notify_waiters();
         }
     }
 
@@ -350,8 +349,8 @@ impl Association {
         self.state = new_state;
     }
 
-    /// get_state atomically returns the state of the Association.
-    fn get_state(&self) -> AssociationState {
+    /// state atomically returns the state of the Association.
+    pub(crate) fn state(&self) -> AssociationState {
         self.state
     }
 
@@ -496,7 +495,7 @@ impl Association {
     }
 
     fn handle_init(&mut self, p: &Packet, i: &ChunkInit) -> Result<Vec<Packet>> {
-        let state = self.get_state();
+        let state = self.state();
         debug!("[{}] chunkInit received in state '{}'", self.side, state);
 
         // https://tools.ietf.org/html/rfc4960#section-5.2.1
@@ -581,7 +580,7 @@ impl Association {
     }
 
     fn handle_init_ack(&mut self, p: &Packet, i: &ChunkInit, now: Instant) -> Result<Vec<Packet>> {
-        let state = self.get_state();
+        let state = self.state();
         debug!("[{}] chunkInitAck received in state '{}'", self.side, state);
         if state != AssociationState::CookieWait {
             // RFC 4960
@@ -688,7 +687,7 @@ impl Association {
     }
 
     fn handle_cookie_echo(&mut self, c: &ChunkCookieEcho) -> Result<Vec<Packet>> {
-        let state = self.get_state();
+        let state = self.state();
         debug!("[{}] COOKIE-ECHO received in state '{}'", self.side, state);
 
         if let Some(my_cookie) = &self.my_cookie {
@@ -732,7 +731,7 @@ impl Association {
     }
 
     fn handle_cookie_ack(&mut self) -> Result<Vec<Packet>> {
-        let state = self.get_state();
+        let state = self.state();
         debug!("[{}] COOKIE-ACK received in state '{}'", self.side, state);
         if state != AssociationState::CookieEchoed {
             // RFC 4960
@@ -797,8 +796,8 @@ impl Association {
         let immediate_sack = d.immediate_sack;
 
         if stream_handle_data {
-            if let Some(_s) = self.streams.get_mut(&d.stream_identifier) {
-                //TODO: s.handle_data(d.clone());
+            if let Some(s) = self.streams.get_mut(&d.stream_identifier) {
+                s.handle_data(d);
             }
         }
 
@@ -813,7 +812,7 @@ impl Association {
             d.cumulative_tsn_ack,
             d.advertised_receiver_window_credit
         );
-        let state = self.get_state();
+        let state = self.state();
         if state != AssociationState::Established
             && state != AssociationState::ShutdownPending
             && state != AssociationState::ShutdownReceived
@@ -862,11 +861,11 @@ impl Association {
             self.on_cumulative_tsn_ack_point_advanced(total_bytes_acked, now);
         }
 
-        /*TODO:for (si, n_bytes_acked) in &bytes_acked_per_stream {
-            if let Some(_s) = self.streams.get_mut(si) {
-                //TODO: s.on_buffer_released(*n_bytes_acked);
+        for (si, n_bytes_acked) in &bytes_acked_per_stream {
+            if let Some(s) = self.streams.get_mut(si) {
+                s.on_buffer_released(*n_bytes_acked);
             }
-        }*/
+        }
 
         // New rwnd value
         // RFC 4960 sec 6.2.1.  Processing a Received SACK
@@ -1007,8 +1006,8 @@ impl Association {
         // corresponding streams so that the abandoned chunks can be removed
         // from the reassemblyQueue.
         for forwarded in &c.streams {
-            if let Some(_s) = self.streams.get_mut(&forwarded.identifier) {
-                //TODO: s.handle_forward_tsn_for_ordered(forwarded.sequence);
+            if let Some(s) = self.streams.get_mut(&forwarded.identifier) {
+                s.handle_forward_tsn_for_ordered(forwarded.sequence);
             }
         }
 
@@ -1017,15 +1016,15 @@ impl Association {
         // Therefore, we need to broadcast this event to all existing streams for
         // unordered chunks.
         // See https://github.com/pion/sctp/issues/106
-        for _s in self.streams.values_mut() {
-            //TODO: s.handle_forward_tsn_for_unordered(c.new_cumulative_tsn);
+        for s in self.streams.values_mut() {
+            s.handle_forward_tsn_for_unordered(c.new_cumulative_tsn);
         }
 
         self.handle_peer_last_tsn_and_acknowledgement(false)
     }
 
     fn handle_shutdown(&mut self, _: &ChunkShutdown) -> Result<Vec<Packet>> {
-        let state = self.get_state();
+        let state = self.state();
 
         if state == AssociationState::Established {
             if !self.inflight_queue.is_empty() {
@@ -1050,7 +1049,7 @@ impl Association {
     }
 
     fn handle_shutdown_ack(&mut self, _: &ChunkShutdownAck) -> Result<Vec<Packet>> {
-        let state = self.get_state();
+        let state = self.state();
         if state == AssociationState::ShutdownSent || state == AssociationState::ShutdownAckSent {
             self.timers.stop(Timer::T2Shutdown);
             self.will_send_shutdown_complete = true;
@@ -1062,10 +1061,10 @@ impl Association {
     }
 
     fn handle_shutdown_complete(&mut self, _: &ChunkShutdownComplete) -> Result<Vec<Packet>> {
-        let state = self.get_state();
+        let state = self.state();
         if state == AssociationState::ShutdownAckSent {
             self.timers.stop(Timer::T2Shutdown);
-            //TODO: self.close().await?;
+            self.close()?;
         }
 
         Ok(vec![])
@@ -1457,8 +1456,8 @@ impl Association {
                 self.side, p.sender_last_tsn, self.peer_last_tsn
             );
             for id in &p.stream_identifiers {
-                if let Some(_s) = self.streams.get(id) {
-                    //TODO: self.unregister_stream(s.stream_identifier);
+                if self.streams.contains_key(id) {
+                    self.unregister_stream(*id);
                 }
             }
             self.reconfig_requests
@@ -1492,18 +1491,20 @@ impl Association {
     }
 
     /// create_stream creates a stream. The caller should hold the lock and check no stream exists for this id.
-    fn create_stream(&mut self, _stream_identifier: u16, _accept: bool) -> Option<&mut Stream> {
-        /*TODO:let s = Stream::new(
+    fn create_stream(
+        &mut self,
+        stream_identifier: u16,
+        _accept: bool,
+        default_payload_type: PayloadProtocolIdentifier,
+    ) -> Option<Stream<'_>> {
+        let s = StreamState::new(
             self.side,
             stream_identifier,
             self.max_payload_size,
-            self.max_message_size,
-            self.state,
-            //TODO: self.awake_write_loop_ch.clone(),
-            self.pending_queue,
+            default_payload_type,
         );
 
-         if accept {
+        /*TODO: if accept {
             if let Some(accept_ch) = &self.accept_ch_tx {
                 if accept_ch.try_send(Arc::clone(&s)).is_ok() {
                     debug!(
@@ -1521,26 +1522,36 @@ impl Association {
                 );
                 return None;
             }
-        }
-        self.streams.insert(stream_identifier, s);
-        self.streams.get_mut(&stream_identifier)*/
+        }*/
 
-        None
+        self.streams.insert(stream_identifier, s);
+
+        Some(Stream {
+            stream_identifier,
+            association: self,
+        })
     }
 
     /// get_or_create_stream gets or creates a stream. The caller should hold the lock.
-    fn get_or_create_stream(&mut self, stream_identifier: u16) -> Option<&mut Stream> {
+    fn get_or_create_stream(&mut self, stream_identifier: u16) -> Option<Stream<'_>> {
         if self.streams.contains_key(&stream_identifier) {
-            self.streams.get_mut(&stream_identifier)
+            Some(Stream {
+                stream_identifier,
+                association: self,
+            })
         } else {
-            self.create_stream(stream_identifier, true)
+            self.create_stream(
+                stream_identifier,
+                true,
+                PayloadProtocolIdentifier::default(),
+            )
         }
     }
 
     fn get_my_receiver_window_credit(&self) -> u32 {
-        let bytes_queued = 0;
-        for _s in self.streams.values() {
-            //TODO: bytes_queued += s.get_num_bytes_in_reassembly_queue().await as u32;
+        let mut bytes_queued = 0;
+        for s in self.streams.values() {
+            bytes_queued += s.get_num_bytes_in_reassembly_queue() as u32;
         }
 
         if bytes_queued >= self.max_receive_buffer_size {
@@ -1566,7 +1577,7 @@ impl Association {
             }
         }
 
-        let state = self.get_state();
+        let state = self.state();
         match state {
             AssociationState::Established => {
                 raw_packets = self.gather_data_packets_to_retransmit(raw_packets, now);
@@ -2050,7 +2061,7 @@ impl Association {
         now: Instant,
         use_forward_tsn: bool,
         side: Side,
-        streams: &HashMap<u16, Stream>,
+        streams: &HashMap<u16, StreamState>,
     ) {
         if !use_forward_tsn {
             return;
@@ -2066,12 +2077,9 @@ impl Association {
         }
 
         // PR-SCTP
-        if let Some(_s) = streams.get(&c.stream_identifier) {
-            /*TODO: let reliability_type: ReliabilityType =
-                s.reliability_type.load(Ordering::SeqCst).into();
-            let reliability_value = s.reliability_value.load(Ordering::SeqCst);*/
-            let reliability_type = ReliabilityType::Rexmit;
-            let reliability_value = 0;
+        if let Some(s) = streams.get(&c.stream_identifier) {
+            let reliability_type: ReliabilityType = s.reliability_type;
+            let reliability_value = s.reliability_value;
 
             if reliability_type == ReliabilityType::Rexmit {
                 if c.nsent >= reliability_value {
@@ -2210,8 +2218,8 @@ impl Association {
         }
     }
 
-    fn send_reset_request(&mut self, stream_identifier: u16) -> Result<()> {
-        let state = self.get_state();
+    pub(crate) fn send_reset_request(&mut self, stream_identifier: u16) -> Result<()> {
+        let state = self.state();
         if state != AssociationState::Established {
             return Err(Error::ErrResetPacketInStateNotExist);
         }
@@ -2233,8 +2241,8 @@ impl Association {
     }
 
     /// send_payload_data sends the data chunks.
-    fn send_payload_data(&mut self, chunks: Vec<ChunkPayloadData>) -> Result<()> {
-        let state = self.get_state();
+    pub(crate) fn send_payload_data(&mut self, chunks: Vec<ChunkPayloadData>) -> Result<()> {
+        let state = self.state();
         if state != AssociationState::Established {
             return Err(Error::ErrPayloadDataStateNotExist);
         }

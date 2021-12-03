@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn test_stream_buffered_amount() -> Result<()> {
-    let mut s = Stream::default();
+    let mut s = StreamState::default();
 
     assert_eq!(0, s.buffered_amount());
     assert_eq!(0, s.buffered_amount_low_threshold());
@@ -21,7 +21,7 @@ fn test_stream_buffered_amount() -> Result<()> {
 
 #[test]
 fn test_stream_amount_on_buffered_amount_low() -> Result<()> {
-    let mut s = Stream::default();
+    let mut s = StreamState::default();
 
     s.buffered_amount = 4096;
     s.set_buffered_amount_low_threshold(2048);
