@@ -41,7 +41,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use tracing::{debug, error, trace, warn};
 
-mod state;
+pub(crate) mod state;
 mod stats;
 mod timer;
 
@@ -128,7 +128,7 @@ pub struct Association {
     // Chunks stored for retransmission
     stored_init: Option<ChunkInit>,
     stored_cookie_echo: Option<ChunkCookieEcho>,
-    streams: HashMap<u16, Arc<Stream>>,
+    streams: HashMap<u16, Stream>,
 
     // local error
     silent_error: Option<Error>,
@@ -283,6 +283,31 @@ impl Association {
         }
 
         Ok(())
+    }
+
+    /// open_stream opens a stream
+    pub(crate) fn open_stream(
+        &mut self,
+        stream_identifier: u16,
+        _default_payload_type: PayloadProtocolIdentifier,
+    ) -> Result<&Stream> {
+        if self.streams.contains_key(&stream_identifier) {
+            return Err(Error::ErrStreamAlreadyExist);
+        }
+
+        if let Some(s) = self.create_stream(stream_identifier, false) {
+            //TODO: s.set_default_payload_type(default_payload_type);
+            Ok(s)
+        } else {
+            Err(Error::ErrStreamCreateFailed)
+        }
+    }
+
+    /// accept_stream accepts a stream
+    pub(crate) fn accept_stream(&self) -> Option<&mut Stream> {
+        //TODO: let mut accept_ch_rx = self.accept_ch_rx.lock().await;
+        //accept_ch_rx.recv().await
+        None
     }
 
     /// bytes_sent returns the number of bytes sent
@@ -1467,18 +1492,18 @@ impl Association {
     }
 
     /// create_stream creates a stream. The caller should hold the lock and check no stream exists for this id.
-    fn create_stream(&mut self, stream_identifier: u16, _accept: bool) -> Option<Arc<Stream>> {
-        let s = Arc::new(Stream::new(
-            /*TODO:format!("{}:{}", stream_identifier, self.name),
+    fn create_stream(&mut self, _stream_identifier: u16, _accept: bool) -> Option<&mut Stream> {
+        /*TODO:let s = Stream::new(
+            self.side,
             stream_identifier,
             self.max_payload_size,
-            Arc::clone(&self.max_message_size),
-            Arc::clone(&self.state),
-            self.awake_write_loop_ch.clone(),
-            Arc::clone(&self.pending_queue),*/
-        ));
+            self.max_message_size,
+            self.state,
+            //TODO: self.awake_write_loop_ch.clone(),
+            self.pending_queue,
+        );
 
-        /*TODO: if accept {
+         if accept {
             if let Some(accept_ch) = &self.accept_ch_tx {
                 if accept_ch.try_send(Arc::clone(&s)).is_ok() {
                     debug!(
@@ -1496,15 +1521,17 @@ impl Association {
                 );
                 return None;
             }
-        }*/
-        self.streams.insert(stream_identifier, Arc::clone(&s));
-        Some(s)
+        }
+        self.streams.insert(stream_identifier, s);
+        self.streams.get_mut(&stream_identifier)*/
+
+        None
     }
 
     /// get_or_create_stream gets or creates a stream. The caller should hold the lock.
-    fn get_or_create_stream(&mut self, stream_identifier: u16) -> Option<Arc<Stream>> {
+    fn get_or_create_stream(&mut self, stream_identifier: u16) -> Option<&mut Stream> {
         if self.streams.contains_key(&stream_identifier) {
-            self.streams.get(&stream_identifier).cloned()
+            self.streams.get_mut(&stream_identifier)
         } else {
             self.create_stream(stream_identifier, true)
         }
@@ -2023,7 +2050,7 @@ impl Association {
         now: Instant,
         use_forward_tsn: bool,
         side: Side,
-        streams: &HashMap<u16, Arc<Stream>>,
+        streams: &HashMap<u16, Stream>,
     ) {
         if !use_forward_tsn {
             return;

@@ -107,41 +107,6 @@ impl Association {
 
         log::debug!("[{}] write_loop exited", name);
     }
-
-    /// open_stream opens a stream
-    pub async fn open_stream(
-        &self,
-        stream_identifier: u16,
-        default_payload_type: PayloadProtocolIdentifier,
-    ) -> Result<Arc<Stream>> {
-        let mut ai = self.association_internal.lock().await;
-        ai.open_stream(stream_identifier, default_payload_type)
-    }
-
-    /// accept_stream accepts a stream
-    pub async fn accept_stream(&self) -> Option<Arc<Stream>> {
-        let mut accept_ch_rx = self.accept_ch_rx.lock().await;
-        accept_ch_rx.recv().await
-    }
-}
-
-impl AssociationInternal {
-    pub(crate) fn open_stream(
-        &mut self,
-        stream_identifier: u16,
-        default_payload_type: PayloadProtocolIdentifier,
-    ) -> Result<Arc<Stream>> {
-        if self.streams.contains_key(&stream_identifier) {
-            return Err(Error::ErrStreamAlreadyExist);
-        }
-
-        if let Some(s) = self.create_stream(stream_identifier, false) {
-            s.set_default_payload_type(default_payload_type);
-            Ok(Arc::clone(&s))
-        } else {
-            Err(Error::ErrStreamCreateFailed)
-        }
-    }
 }
 
 #[async_trait]
