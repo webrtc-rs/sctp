@@ -1,7 +1,10 @@
+use crate::association::timer::{RtoManager, Timer, TimerTable, ACK_INTERVAL};
 use crate::association::{
     state::{AckMode, AckState, AssociationState},
     stats::AssociationStats,
 };
+use crate::chunk::chunk_forward_tsn::ChunkForwardTsnStream;
+use crate::chunk::chunk_payload_data::PayloadProtocolIdentifier;
 use crate::chunk::{
     chunk_abort::ChunkAbort, chunk_cookie_ack::ChunkCookieAck, chunk_cookie_echo::ChunkCookieEcho,
     chunk_error::ChunkError, chunk_forward_tsn::ChunkForwardTsn, chunk_heartbeat::ChunkHeartbeat,
@@ -16,23 +19,18 @@ use crate::config::{
 };
 use crate::error::{Error, Result};
 use crate::packet::Packet;
+use crate::param::param_reconfig_response::{ParamReconfigResponse, ReconfigResult};
 use crate::param::{
     param_heartbeat_info::ParamHeartbeatInfo,
     param_outgoing_reset_request::ParamOutgoingResetRequest, param_state_cookie::ParamStateCookie,
     param_supported_extensions::ParamSupportedExtensions, Param,
 };
-use crate::queue::{
-    control_queue::ControlQueue, payload_queue::PayloadQueue, pending_queue::PendingQueue,
-};
+use crate::queue::{payload_queue::PayloadQueue, pending_queue::PendingQueue};
 use crate::shared::AssociationId;
+use crate::stream::{ReliabilityType, Stream, StreamState};
 use crate::util::{sna16lt, sna32gt, sna32gte, sna32lt, sna32lte};
 use crate::Side;
 
-use crate::association::timer::{RtoManager, Timer, TimerTable, ACK_INTERVAL};
-use crate::chunk::chunk_forward_tsn::ChunkForwardTsnStream;
-use crate::chunk::chunk_payload_data::PayloadProtocolIdentifier;
-use crate::param::param_reconfig_response::{ParamReconfigResponse, ReconfigResult};
-use crate::stream::{ReliabilityType, Stream, StreamState};
 use bytes::Bytes;
 use rand::random;
 use std::collections::{HashMap, VecDeque};
@@ -102,7 +100,9 @@ pub struct Association {
     payload_queue: PayloadQueue,
     inflight_queue: PayloadQueue,
     pending_queue: PendingQueue,
-    control_queue: ControlQueue,
+    control_queue: VecDeque<Packet>,
+    stream_queue: VecDeque<u16>,
+
     mtu: u32,
     // max DATA chunk payload size
     max_payload_size: u32,
@@ -303,10 +303,13 @@ impl Association {
     }
 
     /// accept_stream accepts a stream
-    pub(crate) fn accept_stream(&self) -> Option<Stream<'_>> {
-        //TODO: let mut accept_ch_rx = self.accept_ch_rx.lock().await;
-        //accept_ch_rx.recv().await
-        None
+    pub(crate) fn accept_stream(&mut self) -> Option<Stream<'_>> {
+        self.stream_queue
+            .pop_front()
+            .map(move |stream_identifier| Stream {
+                stream_identifier,
+                association: self,
+            })
     }
 
     /// bytes_sent returns the number of bytes sent
@@ -765,7 +768,7 @@ impl Association {
         let can_push = self.payload_queue.can_push(d, self.peer_last_tsn);
         let mut stream_handle_data = false;
         if can_push {
-            if let Some(_s) = self.get_or_create_stream(d.stream_identifier) {
+            if self.get_or_create_stream(d.stream_identifier).is_some() {
                 if self.get_my_receiver_window_credit() > 0 {
                     // Pass the new chunk to stream level as soon as it arrives
                     self.payload_queue.push(d.clone(), self.peer_last_tsn);
@@ -1494,7 +1497,7 @@ impl Association {
     fn create_stream(
         &mut self,
         stream_identifier: u16,
-        _accept: bool,
+        accept: bool,
         default_payload_type: PayloadProtocolIdentifier,
     ) -> Option<Stream<'_>> {
         let s = StreamState::new(
@@ -1504,25 +1507,9 @@ impl Association {
             default_payload_type,
         );
 
-        /*TODO: if accept {
-            if let Some(accept_ch) = &self.accept_ch_tx {
-                if accept_ch.try_send(Arc::clone(&s)).is_ok() {
-                    debug!(
-                        "[{}] accepted a new stream (streamIdentifier: {})",
-                        self.side, stream_identifier
-                    );
-                } else {
-                    debug!("[{}] dropped a new stream due to accept_ch full", self.side);
-                    return None;
-                }
-            } else {
-                debug!(
-                    "[{}] dropped a new stream due to accept_ch_tx is None",
-                    self.side
-                );
-                return None;
-            }
-        }*/
+        if accept {
+            self.stream_queue.push_back(stream_identifier);
+        }
 
         self.streams.insert(stream_identifier, s);
 
