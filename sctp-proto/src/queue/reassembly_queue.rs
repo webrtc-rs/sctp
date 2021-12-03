@@ -1,7 +1,6 @@
 use crate::chunk::chunk_payload_data::{ChunkPayloadData, PayloadProtocolIdentifier};
-use crate::util::*;
-
 use crate::error::{Error, Result};
+use crate::util::*;
 
 use std::cmp::Ordering;
 
@@ -15,7 +14,7 @@ fn sort_chunks_by_tsn(c: &mut Vec<ChunkPayloadData>) {
     });
 }
 
-fn sort_chunks_by_ssn(c: &mut Vec<ChunkSet>) {
+fn sort_chunks_by_ssn(c: &mut Vec<Chunks>) {
     c.sort_by(|a, b| {
         if sna16lt(a.ssn, b.ssn) {
             Ordering::Less
@@ -25,18 +24,53 @@ fn sort_chunks_by_ssn(c: &mut Vec<ChunkSet>) {
     });
 }
 
-/// chunkSet is a set of chunks that share the same SSN
+/// Chunks is a set of chunks that share the same SSN
 #[derive(Debug, Clone)]
-pub(crate) struct ChunkSet {
+pub struct Chunks {
     /// used only with the ordered chunks
     pub(crate) ssn: u16,
-    pub(crate) ppi: PayloadProtocolIdentifier,
-    pub(crate) chunks: Vec<ChunkPayloadData>,
+    pub ppi: PayloadProtocolIdentifier,
+    pub chunks: Vec<ChunkPayloadData>,
 }
 
-impl ChunkSet {
+impl Chunks {
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn len(&self) -> usize {
+        let mut l = 0;
+        for c in &self.chunks {
+            l += c.user_data.len();
+        }
+        l
+    }
+
+    // Concat all fragments into the buffer
+    pub fn read(&self, buf: &mut [u8]) -> Result<usize> {
+        let mut n_written = 0;
+        let mut err = None;
+        for c in &self.chunks {
+            let to_copy = c.user_data.len();
+            if err.is_none() {
+                let n = std::cmp::min(to_copy, buf.len() - n_written);
+                buf[n_written..n_written + n].copy_from_slice(&c.user_data[..n]);
+                n_written += n;
+                if n < to_copy {
+                    err = Some(Error::ErrShortBuffer);
+                }
+            }
+        }
+
+        if let Some(err) = err {
+            Err(err)
+        } else {
+            Ok(n_written)
+        }
+    }
+
     pub(crate) fn new(ssn: u16, ppi: PayloadProtocolIdentifier) -> Self {
-        ChunkSet {
+        Chunks {
             ssn,
             ppi,
             chunks: vec![],
@@ -110,8 +144,8 @@ pub(crate) struct ReassemblyQueue {
     pub(crate) si: u16,
     pub(crate) next_ssn: u16,
     /// expected SSN for next ordered chunk
-    pub(crate) ordered: Vec<ChunkSet>,
-    pub(crate) unordered: Vec<ChunkSet>,
+    pub(crate) ordered: Vec<Chunks>,
+    pub(crate) unordered: Vec<Chunks>,
     pub(crate) unordered_chunks: Vec<ChunkPayloadData>,
     pub(crate) n_bytes: usize,
 }
@@ -169,7 +203,7 @@ impl ReassemblyQueue {
             }
 
             // If not found, create a new chunkSet
-            let mut cset = ChunkSet::new(chunk.stream_sequence_number, chunk.payload_type);
+            let mut cset = Chunks::new(chunk.stream_sequence_number, chunk.payload_type);
             let unordered = chunk.unordered;
             let ok = cset.push(chunk);
             self.ordered.push(cset);
@@ -181,7 +215,7 @@ impl ReassemblyQueue {
         }
     }
 
-    pub(crate) fn find_complete_unordered_chunk_set(&mut self) -> Option<ChunkSet> {
+    pub(crate) fn find_complete_unordered_chunk_set(&mut self) -> Option<Chunks> {
         let mut start_idx = -1isize;
         let mut n_chunks = 0usize;
         let mut last_tsn = 0u32;
@@ -230,7 +264,7 @@ impl ReassemblyQueue {
             .drain(start_idx as usize..(start_idx as usize) + n_chunks)
             .collect();
 
-        let mut chunk_set = ChunkSet::new(0, chunks[0].payload_type);
+        let mut chunk_set = Chunks::new(0, chunks[0].payload_type);
         chunk_set.chunks = chunks;
 
         Some(chunk_set)
@@ -253,48 +287,30 @@ impl ReassemblyQueue {
         false
     }
 
-    pub(crate) fn read(&mut self, buf: &mut [u8]) -> Result<(usize, PayloadProtocolIdentifier)> {
+    pub(crate) fn read(&mut self) -> Option<Chunks> {
         // Check unordered first
-        let cset = if !self.unordered.is_empty() {
+        let chunks = if !self.unordered.is_empty() {
             self.unordered.remove(0)
         } else if !self.ordered.is_empty() {
             // Now, check ordered
-            let cset = &self.ordered[0];
-            if !cset.is_complete() {
-                return Err(Error::ErrTryAgain);
+            let chunks = &self.ordered[0];
+            if !chunks.is_complete() {
+                return None;
             }
-            if sna16gt(cset.ssn, self.next_ssn) {
-                return Err(Error::ErrTryAgain);
+            if sna16gt(chunks.ssn, self.next_ssn) {
+                return None;
             }
-            if cset.ssn == self.next_ssn {
+            if chunks.ssn == self.next_ssn {
                 self.next_ssn += 1;
             }
             self.ordered.remove(0)
         } else {
-            return Err(Error::ErrTryAgain);
+            return None;
         };
 
-        // Concat all fragments into the buffer
-        let mut n_written = 0;
-        let mut err = None;
-        for c in &cset.chunks {
-            let to_copy = c.user_data.len();
-            self.subtract_num_bytes(to_copy);
-            if err.is_none() {
-                let n = std::cmp::min(to_copy, buf.len() - n_written);
-                buf[n_written..n_written + n].copy_from_slice(&c.user_data[..n]);
-                n_written += n;
-                if n < to_copy {
-                    err = Some(Error::ErrShortBuffer);
-                }
-            }
-        }
+        self.subtract_num_bytes(chunks.len());
 
-        if let Some(err) = err {
-            Err(err)
-        } else {
-            Ok((n_written, cset.ppi))
-        }
+        Some(chunks)
     }
 
     /// Use last_ssn to locate a chunkSet then remove it if the set has

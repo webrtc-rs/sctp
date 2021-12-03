@@ -4,7 +4,7 @@ mod stream_test;
 use crate::association::state::AssociationState;
 use crate::chunk::chunk_payload_data::{ChunkPayloadData, PayloadProtocolIdentifier};
 use crate::error::{Error, Result};
-use crate::queue::reassembly_queue::ReassemblyQueue;
+use crate::queue::reassembly_queue::{Chunks, ReassemblyQueue};
 use crate::Side;
 
 use crate::association::Association;
@@ -63,29 +63,18 @@ impl<'a> Stream<'a> {
     /// read reads a packet of len(p) bytes, dropping the Payload Protocol Identifier.
     /// Returns EOF when the stream is reset or an error if the stream is closed
     /// otherwise.
-    pub fn read(&mut self, p: &mut [u8]) -> Result<usize> {
-        let (n, _) = self.read_sctp(p)?;
-        Ok(n)
+    pub fn read(&mut self) -> Result<Option<Chunks>> {
+        self.read_sctp()
     }
 
     /// read_sctp reads a packet of len(p) bytes and returns the associated Payload
     /// Protocol Identifier.
     /// Returns EOF when the stream is reset or an error if the stream is closed
     /// otherwise.
-    pub fn read_sctp(&mut self, p: &mut [u8]) -> Result<(usize, PayloadProtocolIdentifier)> {
+    pub fn read_sctp(&mut self) -> Result<Option<Chunks>> {
         if let Some(s) = self.association.streams.get_mut(&self.stream_identifier) {
-            while !s.closed {
-                let result = s.reassembly_queue.read(p);
-
-                if result.is_ok() {
-                    return result;
-                } else if let Err(err) = result {
-                    if Error::ErrShortBuffer == err {
-                        return Err(err);
-                    }
-                }
-
-                //TODO:self.read_notifier.notified().await;
+            if !s.closed {
+                return Ok(s.reassembly_queue.read());
             }
         }
 

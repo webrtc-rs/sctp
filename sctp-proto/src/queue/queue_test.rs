@@ -464,11 +464,15 @@ fn test_reassembly_queue_ordered_fragments() -> Result<()> {
 
     let mut buf = vec![0u8; 16];
 
-    let (n, ppi) = rq.read(&mut buf)?;
-    assert_eq!(7, n, "should received 7 bytes");
-    assert_eq!(0, rq.get_num_bytes(), "num bytes mismatch");
-    assert_eq!(ppi, org_ppi, "should have valid ppi");
-    assert_eq!(&buf[..n], b"ABCDEFG", "data should match");
+    if let Some(chunks) = rq.read() {
+        let n = chunks.read(&mut buf)?;
+        assert_eq!(7, n, "should received 7 bytes");
+        assert_eq!(0, rq.get_num_bytes(), "num bytes mismatch");
+        assert_eq!(chunks.ppi, org_ppi, "should have valid ppi");
+        assert_eq!(&buf[..n], b"ABCDEFG", "data should match");
+    } else {
+        assert!(false);
+    }
 
     Ok(())
 }
@@ -522,11 +526,15 @@ fn test_reassembly_queue_unordered_fragments() -> Result<()> {
 
     let mut buf = vec![0u8; 16];
 
-    let (n, ppi) = rq.read(&mut buf)?;
-    assert_eq!(8, n, "should received 8 bytes");
-    assert_eq!(0, rq.get_num_bytes(), "num bytes mismatch");
-    assert_eq!(ppi, org_ppi, "should have valid ppi");
-    assert_eq!(&buf[..n], b"ABCDEFGH", "data should match");
+    if let Some(chunks) = rq.read() {
+        let n = chunks.read(&mut buf)?;
+        assert_eq!(8, n, "should received 8 bytes");
+        assert_eq!(0, rq.get_num_bytes(), "num bytes mismatch");
+        assert_eq!(chunks.ppi, org_ppi, "should have valid ppi");
+        assert_eq!(&buf[..n], b"ABCDEFGH", "data should match");
+    } else {
+        assert!(false);
+    }
 
     Ok(())
 }
@@ -571,18 +579,26 @@ fn test_reassembly_queue_ordered_and_unordered_fragments() -> Result<()> {
     let mut buf = vec![0u8; 16];
 
     // Should read unordered chunks first
-    let (n, ppi) = rq.read(&mut buf)?;
-    assert_eq!(3, n, "should received 3 bytes");
-    assert_eq!(3, rq.get_num_bytes(), "num bytes mismatch");
-    assert_eq!(ppi, org_ppi, "should have valid ppi");
-    assert_eq!(&buf[..n], b"DEF", "data should match");
+    if let Some(chunks) = rq.read() {
+        let n = chunks.read(&mut buf)?;
+        assert_eq!(3, n, "should received 3 bytes");
+        assert_eq!(3, rq.get_num_bytes(), "num bytes mismatch");
+        assert_eq!(chunks.ppi, org_ppi, "should have valid ppi");
+        assert_eq!(&buf[..n], b"DEF", "data should match");
+    } else {
+        assert!(false);
+    }
 
     // Next should read ordered chunks
-    let (n, ppi) = rq.read(&mut buf)?;
-    assert_eq!(3, n, "should received 3 bytes");
-    assert_eq!(0, rq.get_num_bytes(), "num bytes mismatch");
-    assert_eq!(ppi, org_ppi, "should have valid ppi");
-    assert_eq!(&buf[..n], b"ABC", "data should match");
+    if let Some(chunks) = rq.read() {
+        let n = chunks.read(&mut buf)?;
+        assert_eq!(3, n, "should received 3 bytes");
+        assert_eq!(0, rq.get_num_bytes(), "num bytes mismatch");
+        assert_eq!(chunks.ppi, org_ppi, "should have valid ppi");
+        assert_eq!(&buf[..n], b"ABC", "data should match");
+    } else {
+        assert!(false);
+    }
 
     Ok(())
 }
@@ -643,11 +659,15 @@ fn test_reassembly_queue_unordered_complete_skips_incomplete() -> Result<()> {
     let mut buf = vec![0u8; 16];
 
     // Should pick the one that has "GOOD"
-    let (n, ppi) = rq.read(&mut buf)?;
-    assert_eq!(4, n, "should receive 4 bytes");
-    assert_eq!(10, rq.get_num_bytes(), "num bytes mismatch");
-    assert_eq!(ppi, org_ppi, "should have valid ppi");
-    assert_eq!(&buf[..n], b"GOOD", "data should match");
+    if let Some(chunks) = rq.read() {
+        let n = chunks.read(&mut buf)?;
+        assert_eq!(4, n, "should receive 4 bytes");
+        assert_eq!(10, rq.get_num_bytes(), "num bytes mismatch");
+        assert_eq!(chunks.ppi, org_ppi, "should have valid ppi");
+        assert_eq!(&buf[..n], b"GOOD", "data should match");
+    } else {
+        assert!(false);
+    }
 
     Ok(())
 }
@@ -718,9 +738,8 @@ fn test_reassembly_queue_should_fail_to_read_incomplete_chunk() -> Result<()> {
     assert!(!complete, "the set should not be complete");
     assert_eq!(2, rq.get_num_bytes(), "num bytes mismatch");
 
-    let mut buf = vec![0u8; 16];
-    let result = rq.read(&mut buf);
-    assert!(result.is_err(), "read() should not succeed");
+    let result = rq.read();
+    assert!(result.is_none(), "read() should not succeed");
     assert_eq!(2, rq.get_num_bytes(), "num bytes mismatch");
 
     Ok(())
@@ -746,9 +765,8 @@ fn test_reassembly_queue_should_fail_to_read_if_the_nex_ssn_is_not_ready() -> Re
     assert!(complete, "the set should be complete");
     assert_eq!(2, rq.get_num_bytes(), "num bytes mismatch");
 
-    let mut buf = vec![0u8; 16];
-    let result = rq.read(&mut buf);
-    assert!(result.is_err(), "read() should not succeed");
+    let result = rq.read();
+    assert!(result.is_none(), "read() should not succeed");
     assert_eq!(2, rq.get_num_bytes(), "num bytes mismatch");
 
     Ok(())
@@ -775,12 +793,16 @@ fn test_reassembly_queue_detect_buffer_too_short() -> Result<()> {
     assert_eq!(10, rq.get_num_bytes(), "num bytes mismatch");
 
     let mut buf = vec![0u8; 8]; // <- passing buffer too short
-    let result = rq.read(&mut buf);
-    assert!(result.is_err(), "read() should not succeed");
-    if let Err(err) = result {
-        assert_eq!(Error::ErrShortBuffer, err, "read() should not succeed");
+    if let Some(chunks) = rq.read() {
+        let result = chunks.read(&mut buf);
+        assert!(result.is_err(), "read() should not succeed");
+        if let Err(err) = result {
+            assert_eq!(Error::ErrShortBuffer, err, "read() should not succeed");
+        }
+        assert_eq!(0, rq.get_num_bytes(), "num bytes mismatch");
+    } else {
+        assert!(false);
     }
-    assert_eq!(0, rq.get_num_bytes(), "num bytes mismatch");
 
     Ok(())
 }
@@ -908,14 +930,14 @@ fn test_reassembly_queue_forward_tsn_for_unordered_framents() -> Result<()> {
 
 #[test]
 fn test_chunk_set_empty_chunk_set() -> Result<()> {
-    let cset = ChunkSet::new(0, PayloadProtocolIdentifier::default());
+    let cset = Chunks::new(0, PayloadProtocolIdentifier::default());
     assert!(!cset.is_complete(), "empty chunkSet cannot be complete");
     Ok(())
 }
 
 #[test]
 fn test_chunk_set_push_dup_chunks_to_chunk_set() -> Result<()> {
-    let mut cset = ChunkSet::new(0, PayloadProtocolIdentifier::default());
+    let mut cset = Chunks::new(0, PayloadProtocolIdentifier::default());
     cset.push(ChunkPayloadData {
         tsn: 100,
         beginning_fragment: true,
@@ -933,7 +955,7 @@ fn test_chunk_set_push_dup_chunks_to_chunk_set() -> Result<()> {
 
 #[test]
 fn test_chunk_set_incomplete_chunk_set_no_beginning() -> Result<()> {
-    let cset = ChunkSet {
+    let cset = Chunks {
         ssn: 0,
         ppi: PayloadProtocolIdentifier::default(),
         chunks: vec![],
@@ -947,7 +969,7 @@ fn test_chunk_set_incomplete_chunk_set_no_beginning() -> Result<()> {
 
 #[test]
 fn test_chunk_set_incomplete_chunk_set_no_contiguous_tsn() -> Result<()> {
-    let cset = ChunkSet {
+    let cset = Chunks {
         ssn: 0,
         ppi: PayloadProtocolIdentifier::default(),
         chunks: vec![
