@@ -53,7 +53,6 @@ impl From<u8> for ReliabilityType {
 
 /// Stream represents an SCTP stream
 pub struct Stream<'a> {
-    //TODO: pub(crate) read_notifier: Notify,
     //TODO: pub(crate) on_buffered_amount_low: Mutex<Option<OnBufferedAmountLowFn>>,
     pub(crate) stream_identifier: u16,
     pub(crate) association: &'a mut Association,
@@ -126,7 +125,6 @@ impl<'a> Stream<'a> {
                 reset = true;
             }
             s.closed = true;
-            //TODO: self.read_notifier.notify_waiters(); // broadcast regardless
         }
 
         if reset {
@@ -170,7 +168,6 @@ impl StreamState {
             default_payload_type,
             reassembly_queue: ReassemblyQueue::new(stream_identifier),
             sequence_number: 0,
-            //TODO: read_notifier: Notify::new(),
             closed: false,
             unordered: false,
             reliability_type: ReliabilityType::Reliable,
@@ -207,21 +204,7 @@ impl StreamState {
     }
 
     pub(crate) fn handle_data(&mut self, pd: &ChunkPayloadData) {
-        let readable = {
-            if self.reassembly_queue.push(pd.clone()) {
-                let readable = self.reassembly_queue.is_readable();
-                debug!("[{}] reassemblyQueue readable={}", self.side, readable);
-                readable
-            } else {
-                false
-            }
-        };
-
-        if readable {
-            debug!("[{}] readNotifier.signal()", self.side);
-            //TODO: self.read_notifier.notify_one();
-            debug!("[{}] readNotifier.signal() done", self.side);
-        }
+        self.reassembly_queue.push(pd.clone());
     }
 
     pub(crate) fn handle_forward_tsn_for_ordered(&mut self, ssn: u16) {
@@ -231,15 +214,7 @@ impl StreamState {
 
         // Remove all chunks older than or equal to the new TSN from
         // the reassembly_queue.
-        let _readable = {
-            self.reassembly_queue.forward_tsn_for_ordered(ssn);
-            self.reassembly_queue.is_readable()
-        };
-
-        // Notify the reader asynchronously if there's a data chunk to read.
-        /*TODO:if readable {
-            self.read_notifier.notify_one();
-        }*/
+        self.reassembly_queue.forward_tsn_for_ordered(ssn);
     }
 
     pub(crate) fn handle_forward_tsn_for_unordered(&mut self, new_cumulative_tsn: u32) {
@@ -249,16 +224,8 @@ impl StreamState {
 
         // Remove all chunks older than or equal to the new TSN from
         // the reassembly_queue.
-        let _readable = {
-            self.reassembly_queue
-                .forward_tsn_for_unordered(new_cumulative_tsn);
-            self.reassembly_queue.is_readable()
-        };
-
-        // Notify the reader asynchronously if there's a data chunk to read.
-        /*TODO:if readable {
-            self.read_notifier.notify_one();
-        }*/
+        self.reassembly_queue
+            .forward_tsn_for_unordered(new_cumulative_tsn);
     }
 
     fn packetize(&mut self, raw: &Bytes, ppi: PayloadProtocolIdentifier) -> Vec<ChunkPayloadData> {

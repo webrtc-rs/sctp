@@ -337,7 +337,6 @@ impl Association {
     fn unregister_stream(&mut self, stream_identifier: u16) {
         if let Some(mut s) = self.streams.remove(&stream_identifier) {
             s.closed = true;
-            //TODO: s.read_notifier.notify_waiters();
         }
     }
 
