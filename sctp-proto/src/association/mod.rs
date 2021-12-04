@@ -32,6 +32,7 @@ use crate::util::{sna16lt, sna32gt, sna32gte, sna32lt, sna32lte};
 use crate::Side;
 
 use bytes::Bytes;
+use fxhash::FxHashMap;
 use rand::random;
 use std::collections::{HashMap, VecDeque};
 use std::net::{IpAddr, SocketAddr};
@@ -42,6 +43,9 @@ use tracing::{debug, error, trace, warn};
 pub(crate) mod state;
 mod stats;
 mod timer;
+
+#[cfg(test)]
+mod association_test;
 
 ///Association represents an SCTP association
 ///13.2.  Parameters Necessary per Association (i.e., the TCB)
@@ -85,8 +89,8 @@ pub struct Association {
 
     // Reconfig
     my_next_rsn: u32,
-    reconfigs: HashMap<u32, ChunkReconfig>,
-    reconfig_requests: HashMap<u32, ParamOutgoingResetRequest>,
+    reconfigs: FxHashMap<u32, ChunkReconfig>,
+    reconfig_requests: FxHashMap<u32, ParamOutgoingResetRequest>,
 
     // Non-RFC internal data
     remote_addr: Option<SocketAddr>,
@@ -128,7 +132,7 @@ pub struct Association {
     // Chunks stored for retransmission
     stored_init: Option<ChunkInit>,
     stored_cookie_echo: Option<ChunkCookieEcho>,
-    pub(crate) streams: HashMap<u16, StreamState>,
+    pub(crate) streams: FxHashMap<u16, StreamState>,
 
     // local error
     silent_error: Option<Error>,
@@ -2087,7 +2091,7 @@ impl Association {
         now: Instant,
         use_forward_tsn: bool,
         side: Side,
-        streams: &HashMap<u16, StreamState>,
+        streams: &FxHashMap<u16, StreamState>,
     ) {
         if !use_forward_tsn {
             return;

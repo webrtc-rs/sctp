@@ -180,7 +180,7 @@ fn calculate_next_timeout(rto: u64, n_rtos: usize) -> u64 {
 //rtx_timer_test
 ///////////////////////////////////////////////////////////////////
 #[cfg(test)]
-mod test_rto_manager {
+mod test {
     use crate::error::Result;
 
     use super::*;

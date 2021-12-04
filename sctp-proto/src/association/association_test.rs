@@ -1,69 +1,22 @@
 use super::*;
-use std::io;
-use std::net::SocketAddr;
+use std::str::FromStr;
 
-type Result<T> = std::result::Result<T, util::Error>;
+const ACCEPT_CH_SIZE: usize = 16;
 
-impl From<Error> for util::Error {
-    fn from(e: Error) -> Self {
-        util::Error::from_std(e)
-    }
-}
-
-struct DumbConn;
-
-#[async_trait]
-impl Conn for DumbConn {
-    async fn connect(&self, _addr: SocketAddr) -> Result<()> {
-        Err(io::Error::new(io::ErrorKind::Other, "Not applicable").into())
-    }
-
-    async fn recv(&self, _b: &mut [u8]) -> Result<usize> {
-        Ok(0)
-    }
-
-    async fn recv_from(&self, _buf: &mut [u8]) -> Result<(usize, SocketAddr)> {
-        Err(io::Error::new(io::ErrorKind::Other, "Not applicable").into())
-    }
-
-    async fn send(&self, _b: &[u8]) -> Result<usize> {
-        Ok(0)
-    }
-
-    async fn send_to(&self, _buf: &[u8], _target: SocketAddr) -> Result<usize> {
-        Err(io::Error::new(io::ErrorKind::Other, "Not applicable").into())
-    }
-
-    async fn local_addr(&self) -> Result<SocketAddr> {
-        Err(io::Error::new(io::ErrorKind::AddrNotAvailable, "Addr Not Available").into())
-    }
-
-    async fn remote_addr(&self) -> Option<SocketAddr> {
-        None
-    }
-
-    async fn close(&self) -> Result<()> {
-        Ok(())
-    }
-}
-
-fn create_association_internal(config: Config) -> AssociationInternal {
-    let (close_loop_ch_tx, _close_loop_ch_rx) = broadcast::channel(1);
-    let (accept_ch_tx, _accept_ch_rx) = mpsc::channel(1);
-    let (handshake_completed_ch_tx, _handshake_completed_ch_rx) = mpsc::channel(1);
-    let (awake_write_loop_ch_tx, _awake_write_loop_ch_rx) = mpsc::channel(1);
-    AssociationInternal::new(
-        config,
-        close_loop_ch_tx,
-        accept_ch_tx,
-        handshake_completed_ch_tx,
-        Arc::new(awake_write_loop_ch_tx),
+fn create_association(config: TransportConfig) -> Association {
+    Association::new(
+        None,
+        Arc::new(config),
+        0,
+        SocketAddr::from_str("0.0.0.0:0").unwrap(),
+        None,
+        Instant::now(),
     )
 }
 
 #[test]
 fn test_create_forward_tsn_forward_one_abandoned() -> Result<()> {
-    let mut a = AssociationInternal::default();
+    let mut a = Association::default();
 
     a.cumulative_tsn_ack_point = 9;
     a.advanced_peer_tsn_ack_point = 10;
@@ -75,7 +28,7 @@ fn test_create_forward_tsn_forward_one_abandoned() -> Result<()> {
         stream_sequence_number: 2,
         user_data: Bytes::from_static(b"ABC"),
         nsent: 1,
-        abandoned: Arc::new(AtomicBool::new(true)),
+        abandoned: true,
         ..Default::default()
     });
 
@@ -91,7 +44,7 @@ fn test_create_forward_tsn_forward_one_abandoned() -> Result<()> {
 
 #[test]
 fn test_create_forward_tsn_forward_two_abandoned_with_the_same_si() -> Result<()> {
-    let mut a = AssociationInternal::default();
+    let mut a = Association::default();
 
     a.cumulative_tsn_ack_point = 9;
     a.advanced_peer_tsn_ack_point = 12;
@@ -103,7 +56,7 @@ fn test_create_forward_tsn_forward_two_abandoned_with_the_same_si() -> Result<()
         stream_sequence_number: 2,
         user_data: Bytes::from_static(b"ABC"),
         nsent: 1,
-        abandoned: Arc::new(AtomicBool::new(true)),
+        abandoned: true,
         ..Default::default()
     });
     a.inflight_queue.push_no_check(ChunkPayloadData {
@@ -114,7 +67,7 @@ fn test_create_forward_tsn_forward_two_abandoned_with_the_same_si() -> Result<()
         stream_sequence_number: 3,
         user_data: Bytes::from_static(b"DEF"),
         nsent: 1,
-        abandoned: Arc::new(AtomicBool::new(true)),
+        abandoned: true,
         ..Default::default()
     });
     a.inflight_queue.push_no_check(ChunkPayloadData {
@@ -125,7 +78,7 @@ fn test_create_forward_tsn_forward_two_abandoned_with_the_same_si() -> Result<()
         stream_sequence_number: 1,
         user_data: Bytes::from_static(b"123"),
         nsent: 1,
-        abandoned: Arc::new(AtomicBool::new(true)),
+        abandoned: true,
         ..Default::default()
     });
 
@@ -155,9 +108,9 @@ fn test_create_forward_tsn_forward_two_abandoned_with_the_same_si() -> Result<()
     Ok(())
 }
 
-#[tokio::test]
-async fn test_handle_forward_tsn_forward_3unreceived_chunks() -> Result<()> {
-    let mut a = AssociationInternal::default();
+#[test]
+fn test_handle_forward_tsn_forward_3unreceived_chunks() -> Result<()> {
+    let mut a = Association::default();
 
     a.use_forward_tsn = true;
     let prev_tsn = a.peer_last_tsn;
@@ -170,7 +123,7 @@ async fn test_handle_forward_tsn_forward_3unreceived_chunks() -> Result<()> {
         }],
     };
 
-    let p = a.handle_forward_tsn(&fwdtsn).await?;
+    let p = a.handle_forward_tsn(&fwdtsn)?;
 
     let delayed_ack_triggered = a.delayed_ack_triggered;
     let immediate_ack_triggered = a.immediate_ack_triggered;
@@ -189,9 +142,9 @@ async fn test_handle_forward_tsn_forward_3unreceived_chunks() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test]
-async fn test_handle_forward_tsn_forward_1for1_missing() -> Result<()> {
-    let mut a = AssociationInternal::default();
+#[test]
+fn test_handle_forward_tsn_forward_1for1_missing() -> Result<()> {
+    let mut a = Association::default();
 
     a.use_forward_tsn = true;
     let prev_tsn = a.peer_last_tsn;
@@ -218,7 +171,7 @@ async fn test_handle_forward_tsn_forward_1for1_missing() -> Result<()> {
         }],
     };
 
-    let p = a.handle_forward_tsn(&fwdtsn).await?;
+    let p = a.handle_forward_tsn(&fwdtsn)?;
 
     let delayed_ack_triggered = a.delayed_ack_triggered;
     let immediate_ack_triggered = a.immediate_ack_triggered;
@@ -237,9 +190,9 @@ async fn test_handle_forward_tsn_forward_1for1_missing() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test]
-async fn test_handle_forward_tsn_forward_1for2_missing() -> Result<()> {
-    let mut a = AssociationInternal::default();
+#[test]
+fn test_handle_forward_tsn_forward_1for2_missing() -> Result<()> {
+    let mut a = Association::default();
 
     a.use_forward_tsn = true;
     let prev_tsn = a.peer_last_tsn;
@@ -266,7 +219,7 @@ async fn test_handle_forward_tsn_forward_1for2_missing() -> Result<()> {
         }],
     };
 
-    let p = a.handle_forward_tsn(&fwdtsn).await?;
+    let p = a.handle_forward_tsn(&fwdtsn)?;
 
     let immediate_ack_triggered = a.immediate_ack_triggered;
     assert_eq!(
@@ -283,9 +236,9 @@ async fn test_handle_forward_tsn_forward_1for2_missing() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test]
-async fn test_handle_forward_tsn_dup_forward_tsn_chunk_should_generate_sack() -> Result<()> {
-    let mut a = AssociationInternal::default();
+#[test]
+fn test_handle_forward_tsn_dup_forward_tsn_chunk_should_generate_sack() -> Result<()> {
+    let mut a = Association::default();
 
     a.use_forward_tsn = true;
     let prev_tsn = a.peer_last_tsn;
@@ -298,7 +251,7 @@ async fn test_handle_forward_tsn_dup_forward_tsn_chunk_should_generate_sack() ->
         }],
     };
 
-    let p = a.handle_forward_tsn(&fwdtsn).await?;
+    let p = a.handle_forward_tsn(&fwdtsn)?;
 
     let ack_state = a.ack_state;
     assert_eq!(a.peer_last_tsn, prev_tsn, "peerLastTSN should not advance");
@@ -308,27 +261,23 @@ async fn test_handle_forward_tsn_dup_forward_tsn_chunk_should_generate_sack() ->
     Ok(())
 }
 
-#[tokio::test]
-async fn test_assoc_create_new_stream() -> Result<()> {
-    let (accept_ch_tx, _accept_ch_rx) = mpsc::channel(ACCEPT_CH_SIZE);
-    let mut a = AssociationInternal {
-        accept_ch_tx: Some(accept_ch_tx),
-        ..Default::default()
-    };
+#[test]
+fn test_assoc_create_new_stream() -> Result<()> {
+    let mut a = Association::default();
 
     for i in 0..ACCEPT_CH_SIZE {
-        let s = a.create_stream(i as u16, true);
-        if let Some(s) = s {
-            let result = a.streams.get(&s.stream_identifier);
-            assert!(result.is_some(), "should be in a.streams map");
-        } else {
-            assert!(false, "{} should success", i);
-        }
+        let stream_identifier =
+            if let Some(s) = a.create_stream(i as u16, true, PayloadProtocolIdentifier::Unknown) {
+                s.stream_identifier
+            } else {
+                assert!(false, "{} should success", i);
+                0
+            };
+        let result = a.streams.get(&stream_identifier);
+        assert!(result.is_some(), "should be in a.streams map");
     }
 
     let new_si = ACCEPT_CH_SIZE as u16;
-    let s = a.create_stream(new_si, true);
-    assert!(s.is_none(), "should be none");
     let result = a.streams.get(&new_si);
     assert!(result.is_none(), "should NOT be in a.streams map");
 
@@ -341,19 +290,14 @@ async fn test_assoc_create_new_stream() -> Result<()> {
         ..Default::default()
     };
 
-    let p = a.handle_data(&to_be_ignored).await?;
+    let p = a.handle_data(&to_be_ignored)?;
     assert!(p.is_empty(), "should return empty");
 
     Ok(())
 }
 
-async fn handle_init_test(name: &str, initial_state: AssociationState, expect_err: bool) {
-    let mut a = create_association_internal(Config {
-        net_conn: Arc::new(DumbConn {}),
-        max_receive_buffer_size: 0,
-        max_message_size: 0,
-        name: "client".to_owned(),
-    });
+fn handle_init_test(name: &str, initial_state: AssociationState, expect_err: bool) {
+    let mut a = create_association(TransportConfig::default());
     a.set_state(initial_state);
     let pkt = Packet {
         source_port: 5001,
@@ -370,7 +314,7 @@ async fn handle_init_test(name: &str, initial_state: AssociationState, expect_er
     };
     init.set_supported_extensions();
 
-    let result = a.handle_init(&pkt, &init).await;
+    let result = a.handle_init(&pkt, &init);
     if expect_err {
         assert!(result.is_err(), "{} should fail", name);
         return;
@@ -395,70 +339,56 @@ async fn handle_init_test(name: &str, initial_state: AssociationState, expect_er
     assert!(a.use_forward_tsn, "{} should be set to true", name);
 }
 
-#[tokio::test]
-async fn test_assoc_handle_init() -> Result<()> {
-    handle_init_test("normal", AssociationState::Closed, false).await;
+#[test]
+fn test_assoc_handle_init() -> Result<()> {
+    handle_init_test("normal", AssociationState::Closed, false);
 
     handle_init_test(
         "unexpected state established",
         AssociationState::Established,
         true,
-    )
-    .await;
+    );
 
     handle_init_test(
         "unexpected state shutdownAckSent",
         AssociationState::ShutdownAckSent,
         true,
-    )
-    .await;
+    );
 
     handle_init_test(
         "unexpected state shutdownPending",
         AssociationState::ShutdownPending,
         true,
-    )
-    .await;
+    );
 
     handle_init_test(
         "unexpected state shutdownReceived",
         AssociationState::ShutdownReceived,
         true,
-    )
-    .await;
+    );
 
     handle_init_test(
         "unexpected state shutdownSent",
         AssociationState::ShutdownSent,
         true,
-    )
-    .await;
+    );
 
     Ok(())
 }
 
-#[tokio::test]
-async fn test_assoc_max_message_size_default() -> Result<()> {
-    let mut a = create_association_internal(Config {
-        net_conn: Arc::new(DumbConn {}),
-        max_receive_buffer_size: 0,
-        max_message_size: 0,
-        name: "client".to_owned(),
-    });
-    assert_eq!(
-        65536,
-        a.max_message_size.load(Ordering::SeqCst),
-        "should match"
-    );
+#[test]
+fn test_assoc_max_message_size_default() -> Result<()> {
+    let mut a = create_association(TransportConfig::default());
+    assert_eq!(65536, a.max_message_size, "should match");
 
-    let stream = a.create_stream(1, false);
+    let ppi = PayloadProtocolIdentifier::Unknown;
+    let stream = a.create_stream(1, false, ppi);
     assert!(stream.is_some(), "should succeed");
 
-    if let Some(s) = stream {
+    if let Some(mut s) = stream {
         let p = Bytes::from(vec![0u8; 65537]);
-        let ppi = PayloadProtocolIdentifier::from(s.default_payload_type.load(Ordering::SeqCst));
 
-        if let Err(err) = s.write_sctp(&p.slice(..65536), ppi).await {
+        if let Err(err) = s.write_sctp(&p.slice(..65536), ppi) {
             assert_ne!(
                 Error::ErrOutboundPacketTooLarge,
                 err,
@@ -468,7 +398,7 @@ async fn test_assoc_max_message_size_default() -> Result<()> {
             assert!(false, "should be error");
         }
 
-        if let Err(err) = s.write_sctp(&p.slice(..65537), ppi).await {
+        if let Err(err) = s.write_sctp(&p.slice(..65537), ppi) {
             assert_eq!(
                 Error::ErrOutboundPacketTooLarge,
                 err,
@@ -482,29 +412,23 @@ async fn test_assoc_max_message_size_default() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test]
-async fn test_assoc_max_message_size_explicit() -> Result<()> {
-    let mut a = create_association_internal(Config {
-        net_conn: Arc::new(DumbConn {}),
-        max_receive_buffer_size: 0,
+#[test]
+fn test_assoc_max_message_size_explicit() -> Result<()> {
+    let mut a = create_association(TransportConfig {
         max_message_size: 30000,
-        name: "client".to_owned(),
+        ..Default::default()
     });
 
-    assert_eq!(
-        30000,
-        a.max_message_size.load(Ordering::SeqCst),
-        "should match"
-    );
+    assert_eq!(30000, a.max_message_size, "should match");
 
-    let stream = a.create_stream(1, false);
+    let ppi = PayloadProtocolIdentifier::Unknown;
+    let stream = a.create_stream(1, false, ppi);
     assert!(stream.is_some(), "should succeed");
 
-    if let Some(s) = stream {
+    if let Some(mut s) = stream {
         let p = Bytes::from(vec![0u8; 30001]);
-        let ppi = PayloadProtocolIdentifier::from(s.default_payload_type.load(Ordering::SeqCst));
 
-        if let Err(err) = s.write_sctp(&p.slice(..30000), ppi).await {
+        if let Err(err) = s.write_sctp(&p.slice(..30000), ppi) {
             assert_ne!(
                 Error::ErrOutboundPacketTooLarge,
                 err,
@@ -514,7 +438,7 @@ async fn test_assoc_max_message_size_explicit() -> Result<()> {
             assert!(false, "should be error");
         }
 
-        if let Err(err) = s.write_sctp(&p.slice(..30001), ppi).await {
+        if let Err(err) = s.write_sctp(&p.slice(..30001), ppi) {
             assert_eq!(
                 Error::ErrOutboundPacketTooLarge,
                 err,
