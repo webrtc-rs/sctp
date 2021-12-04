@@ -2,15 +2,48 @@
 mod stream_test;
 
 use crate::association::state::AssociationState;
+use crate::association::Association;
 use crate::chunk::chunk_payload_data::{ChunkPayloadData, PayloadProtocolIdentifier};
 use crate::error::{Error, Result};
 use crate::queue::reassembly_queue::{Chunks, ReassemblyQueue};
 use crate::Side;
 
-use crate::association::Association;
 use bytes::Bytes;
 use std::fmt;
 use tracing::{debug, error, trace};
+
+/// Application events about streams
+#[derive(Debug, PartialEq, Eq)]
+pub enum StreamEvent {
+    /// One or more new streams has been opened
+    Opened,
+    /// A currently open stream has data or errors waiting to be read
+    Readable {
+        /// Which stream is now readable
+        id: u16,
+    },
+    /// A formerly write-blocked stream might be ready for a write or have been stopped
+    ///
+    /// Only generated for streams that are currently open.
+    Writable {
+        /// Which stream is now writable
+        id: u16,
+    },
+    /// A finished stream has been fully acknowledged or stopped
+    Finished {
+        /// Which stream has been finished
+        id: u16,
+    },
+    /// The peer asked us to stop sending on an outgoing stream
+    Stopped {
+        /// Which stream has been stopped
+        id: u16,
+        /// Error code supplied by the peer
+        error_code: u16,
+    },
+    /// At least one new stream of a certain directionality may be opened
+    Available,
+}
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum ReliabilityType {

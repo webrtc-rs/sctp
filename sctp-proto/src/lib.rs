@@ -18,6 +18,8 @@
 
 use crate::shared::EcnCodepoint;
 
+use bytes::Bytes;
+use std::time::Instant;
 use std::{
     fmt,
     net::{IpAddr, SocketAddr},
@@ -87,18 +89,17 @@ impl ops::Not for Side {
     }
 }
 
-/// An outgoing packet
+/// Incoming/outgoing Transmit
 #[derive(Debug)]
 pub struct Transmit {
+    /// Received/Sent time
+    pub now: Instant,
     /// The socket this datagram should be sent to
-    pub destination: SocketAddr,
+    pub remote: SocketAddr,
     /// Explicit congestion notification bits to set on the packet
     pub ecn: Option<EcnCodepoint>,
     /// Contents of the datagram
-    pub contents: Vec<u8>,
-    /// The segment size if this transmission contains multiple datagrams.
-    /// This is `None` if the transmit only contains a single datagram
-    pub segment_size: Option<usize>,
-    /// Optional source IP address for the datagram
-    pub src_ip: Option<IpAddr>,
+    pub contents: Vec<Bytes>,
+    /// Optional local IP address for the datagram
+    pub local_ip: Option<IpAddr>,
 }
