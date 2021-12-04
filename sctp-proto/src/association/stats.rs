@@ -1,4 +1,4 @@
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Copy, Clone)]
 pub struct AssociationStats {
     n_datas: u64,
     n_sacks: u64,

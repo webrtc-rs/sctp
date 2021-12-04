@@ -1,4 +1,3 @@
-use crate::association::timer::{RtoManager, Timer, TimerTable, ACK_INTERVAL};
 use crate::association::{
     state::{AckMode, AckState, AssociationState},
     stats::AssociationStats,
@@ -30,6 +29,7 @@ use crate::shared::AssociationId;
 use crate::stream::{ReliabilityType, Stream, StreamState};
 use crate::util::{sna16lt, sna32gt, sna32gte, sna32lt, sna32lte};
 use crate::Side;
+use timer::{RtoManager, Timer, TimerTable, ACK_INTERVAL};
 
 use bytes::Bytes;
 use fxhash::FxHashMap;
@@ -37,7 +37,7 @@ use rand::random;
 use std::collections::{HashMap, VecDeque};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tracing::{debug, error, trace, warn};
 
 pub(crate) mod state;
@@ -68,6 +68,7 @@ mod association_test;
 pub struct Association {
     side: Side,
     state: AssociationState,
+    handshake_completed: bool,
     max_message_size: u32,
     inflight_queue_length: usize,
     will_send_shutdown: bool,
@@ -175,6 +176,7 @@ impl Association {
 
         let mut this = Association {
             side,
+            handshake_completed: false,
             max_receive_buffer_size: config.max_receive_buffer_size,
             max_message_size: config.max_message_size,
             my_max_num_outbound_streams: config.max_num_outbound_streams,
@@ -248,17 +250,75 @@ impl Association {
             if !expired {
                 continue;
             }
-            self.timers.stop(timer);
             trace!(timer = ?timer, "timeout");
 
             if timer == Timer::Ack {
                 self.on_ack_timeout();
+                self.timers.start(timer, now, ACK_INTERVAL);
             } else if failure {
                 self.on_retransmission_failure(timer);
             } else {
                 self.on_retransmission_timeout(timer, n_rtos);
+                self.timers.start(timer, now, self.rto_mgr.get_rto());
             }
         }
+    }
+
+    /// Returns Association statistics
+    pub fn stats(&self) -> AssociationStats {
+        self.stats
+    }
+
+    /// Whether the Association is in the process of being established
+    ///
+    /// If this returns `false`, the Association may be either established or closed, signaled by the
+    /// emission of a `Connected` or `ConnectionLost` message respectively.
+    pub fn is_handshaking(&self) -> bool {
+        !self.handshake_completed
+    }
+
+    /// Whether the connection is closed
+    ///
+    /// Closed connections cannot transport any further data. A connection becomes closed when
+    /// either peer application intentionally closes it, or when either transport layer detects an
+    /// error such as a time-out or certificate validation failure.
+    ///
+    /// A `ConnectionLost` event is emitted with details when the connection becomes closed.
+    pub fn is_closed(&self) -> bool {
+        self.state == AssociationState::Closed
+    }
+
+    /// Look up whether we're the client or server of this Association
+    pub fn side(&self) -> Side {
+        self.side
+    }
+
+    /// The latest socket address for this Association's peer
+    pub fn remote_address(&self) -> Option<SocketAddr> {
+        self.remote_addr
+    }
+
+    /// Current best estimate of this Association's latency (round-trip-time)
+    pub fn rtt(&self) -> Duration {
+        Duration::from_millis(self.rto_mgr.get_rto())
+    }
+
+    /// The local IP address which was used when the peer established
+    /// the connection
+    ///
+    /// This can be different from the address the endpoint is bound to, in case
+    /// the endpoint is bound to a wildcard address like `0.0.0.0` or `::`.
+    ///
+    /// This will return `None` for clients.
+    ///
+    /// Retrieving the local IP address is currently supported on the following
+    /// platforms:
+    /// - Linux
+    ///
+    /// On all non-supported platforms the local IP address will not be available,
+    /// and the method will return `None`.
+    pub fn local_ip(&self) -> Option<IpAddr> {
+        self.local_ip
     }
 
     /// Shutdown initiates the shutdown sequence. The method blocks until the
@@ -757,9 +817,7 @@ impl Association {
                     self.stored_cookie_echo = None;
 
                     self.set_state(AssociationState::Established);
-                    /*TODO: if let Some(handshake_completed_ch) = &self.handshake_completed_ch_tx {
-                        let _ = handshake_completed_ch.send(None).await;
-                    }*/
+                    self.handshake_completed = true;
                 }
                 _ => return Ok(vec![]),
             };
@@ -791,9 +849,7 @@ impl Association {
         self.stored_cookie_echo = None;
 
         self.set_state(AssociationState::Established);
-        /*TODO: if let Some(handshake_completed_ch) = &self.handshake_completed_ch_tx {
-            let _ = handshake_completed_ch.send(None).await;
-        }*/
+        self.handshake_completed = true;
 
         Ok(vec![])
     }
@@ -2316,8 +2372,8 @@ impl Association {
         self.awake_write_loop();
     }
 
-    fn on_retransmission_timeout(&mut self, id: Timer, n_rtos: usize) {
-        match id {
+    fn on_retransmission_timeout(&mut self, timer_id: Timer, n_rtos: usize) {
+        match timer_id {
             Timer::T1Init => {
                 if let Err(err) = self.send_init() {
                     debug!(
