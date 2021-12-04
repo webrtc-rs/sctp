@@ -217,6 +217,46 @@ impl Association {
         this
     }
 
+    /// Returns the next time at which `handle_timeout` should be called
+    ///
+    /// The value returned may change after:
+    /// - the application performed some I/O on the connection
+    /// - a call was made to `handle_event`
+    /// - a call to `poll_transmit` returned `Some`
+    /// - a call was made to `handle_timeout`
+    #[must_use]
+    pub fn poll_timeout(&mut self) -> Option<Instant> {
+        self.timers.next_timeout()
+    }
+
+    /// Process timer expirations
+    ///
+    /// Executes protocol logic, potentially preparing signals (including application `Event`s,
+    /// `EndpointEvent`s and outgoing datagrams) that should be extracted through the relevant
+    /// methods.
+    ///
+    /// It is most efficient to call this immediately after the system clock reaches the latest
+    /// `Instant` that was output by `poll_timeout`; however spurious extra calls will simply
+    /// no-op and therefore are safe.
+    pub fn handle_timeout(&mut self, now: Instant) {
+        for &timer in &Timer::VALUES {
+            let (expired, failure, n_rtos) = self.timers.is_expired(timer, now);
+            if !expired {
+                continue;
+            }
+            self.timers.stop(timer);
+            trace!(timer = ?timer, "timeout");
+
+            if timer == Timer::Ack {
+                self.on_ack_timeout();
+            } else if failure {
+                self.on_retransmission_failure(timer);
+            } else {
+                self.on_retransmission_timeout(timer, n_rtos);
+            }
+        }
+    }
+
     /// Shutdown initiates the shutdown sequence. The method blocks until the
     /// shutdown sequence is completed and the connection is closed, or until the
     /// passed context is done, in which case the context's error is returned.
@@ -2258,6 +2298,164 @@ impl Association {
         // Close all retransmission & ack timers
         for timer in Timer::VALUES {
             self.timers.stop(timer);
+        }
+    }
+
+    fn on_ack_timeout(&mut self) {
+        trace!(
+            "[{}] ack timed out (ack_state: {})",
+            self.side,
+            self.ack_state
+        );
+        self.stats.inc_ack_timeouts();
+        self.ack_state = AckState::Immediate;
+        self.awake_write_loop();
+    }
+
+    fn on_retransmission_timeout(&mut self, id: Timer, n_rtos: usize) {
+        match id {
+            Timer::T1Init => {
+                if let Err(err) = self.send_init() {
+                    debug!(
+                        "[{}] failed to retransmit init (n_rtos={}): {:?}",
+                        self.side, n_rtos, err
+                    );
+                }
+            }
+
+            Timer::T1Cookie => {
+                if let Err(err) = self.send_cookie_echo() {
+                    debug!(
+                        "[{}] failed to retransmit cookie-echo (n_rtos={}): {:?}",
+                        self.side, n_rtos, err
+                    );
+                }
+            }
+
+            Timer::T2Shutdown => {
+                debug!(
+                    "[{}] retransmission of shutdown timeout (n_rtos={})",
+                    self.side, n_rtos
+                );
+                let state = self.state();
+                match state {
+                    AssociationState::ShutdownSent => {
+                        self.will_send_shutdown = true;
+                        self.awake_write_loop();
+                    }
+                    AssociationState::ShutdownAckSent => {
+                        self.will_send_shutdown_ack = true;
+                        self.awake_write_loop();
+                    }
+                    _ => {}
+                }
+            }
+
+            Timer::T3RTX => {
+                self.stats.inc_t3timeouts();
+
+                // RFC 4960 sec 6.3.3
+                //  E1)  For the destination address for which the timer expires, adjust
+                //       its ssthresh with rules defined in Section 7.2.3 and set the
+                //       cwnd <- MTU.
+                // RFC 4960 sec 7.2.3
+                //   When the T3-rtx timer expires on an address, SCTP should perform slow
+                //   start by:
+                //      ssthresh = max(cwnd/2, 4*MTU)
+                //      cwnd = 1*MTU
+
+                self.ssthresh = std::cmp::max(self.cwnd / 2, 4 * self.mtu);
+                self.cwnd = self.mtu;
+                trace!(
+                    "[{}] updated cwnd={} ssthresh={} inflight={} (RTO)",
+                    self.side,
+                    self.cwnd,
+                    self.ssthresh,
+                    self.inflight_queue.get_num_bytes()
+                );
+
+                // RFC 3758 sec 3.5
+                //  A5) Any time the T3-rtx timer expires, on any destination, the sender
+                //  SHOULD try to advance the "Advanced.Peer.Ack.Point" by following
+                //  the procedures outlined in C2 - C5.
+                if self.use_forward_tsn {
+                    // RFC 3758 Sec 3.5 C2
+                    let mut i = self.advanced_peer_tsn_ack_point + 1;
+                    while let Some(c) = self.inflight_queue.get(i) {
+                        if !c.abandoned() {
+                            break;
+                        }
+                        self.advanced_peer_tsn_ack_point = i;
+                        i += 1;
+                    }
+
+                    // RFC 3758 Sec 3.5 C3
+                    if sna32gt(
+                        self.advanced_peer_tsn_ack_point,
+                        self.cumulative_tsn_ack_point,
+                    ) {
+                        self.will_send_forward_tsn = true;
+                        debug!(
+                            "[{}] on_retransmission_timeout {}: sna32GT({}, {})",
+                            self.side,
+                            self.will_send_forward_tsn,
+                            self.advanced_peer_tsn_ack_point,
+                            self.cumulative_tsn_ack_point
+                        );
+                    }
+                }
+
+                debug!(
+                    "[{}] T3-rtx timed out: n_rtos={} cwnd={} ssthresh={}",
+                    self.side, n_rtos, self.cwnd, self.ssthresh
+                );
+
+                self.inflight_queue.mark_all_to_retrasmit();
+                self.awake_write_loop();
+            }
+
+            Timer::Reconfig => {
+                self.will_retransmit_reconfig = true;
+                self.awake_write_loop();
+            }
+
+            _ => {}
+        }
+    }
+
+    fn on_retransmission_failure(&mut self, id: Timer) {
+        match id {
+            Timer::T1Init => {
+                error!("[{}] retransmission failure: T1-init", self.side);
+                /*TODO:if let Some(handshake_completed_ch) = &self.handshake_completed_ch_tx {
+                    let _ = handshake_completed_ch
+                        .send(Some(Error::ErrHandshakeInitAck))
+                        .await;
+                }*/
+            }
+
+            Timer::T1Cookie => {
+                error!("[{}] retransmission failure: T1-cookie", self.side);
+                /*TODO: if let Some(handshake_completed_ch) = &self.handshake_completed_ch_tx {
+                    let _ = handshake_completed_ch
+                        .send(Some(Error::ErrHandshakeCookieEcho))
+                        .await;
+                }*/
+            }
+
+            Timer::T2Shutdown => {
+                error!("[{}] retransmission failure: T2-shutdown", self.side);
+            }
+
+            Timer::T3RTX => {
+                // T3-rtx timer will not fail by design
+                // Justifications:
+                //  * ICE would fail if the connectivity is lost
+                //  * WebRTC spec is not clear how this incident should be reported to ULP
+                error!("[{}] retransmission failure: T3-rtx (DATA)", self.side);
+            }
+
+            _ => {}
         }
     }
 }

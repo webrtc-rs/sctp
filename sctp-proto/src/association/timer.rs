@@ -74,7 +74,7 @@ impl TimerTable {
         self.retrans[timer as usize] = 0;
     }
 
-    pub fn is_expired(&mut self, timer: Timer, after: Instant) -> (bool, bool) {
+    pub fn is_expired(&mut self, timer: Timer, after: Instant) -> (bool, bool, usize) {
         let expired = self.data[timer as usize].map_or(false, |x| x <= after);
         let mut failure = false;
         if expired {
@@ -84,7 +84,7 @@ impl TimerTable {
             }
         }
 
-        (expired, failure)
+        (expired, failure, self.retrans[timer as usize])
     }
 }
 
@@ -173,5 +173,94 @@ fn calculate_next_timeout(rto: u64, n_rtos: usize) -> u64 {
         std::cmp::min(rto << n_rtos, RTO_MAX)
     } else {
         RTO_MAX
+    }
+}
+
+///////////////////////////////////////////////////////////////////
+//rtx_timer_test
+///////////////////////////////////////////////////////////////////
+#[cfg(test)]
+mod test_rto_manager {
+    use crate::error::Result;
+
+    use super::*;
+
+    #[test]
+    fn test_rto_manager_initial_values() -> Result<()> {
+        let m = RtoManager::new();
+        assert_eq!(RTO_INITIAL, m.rto, "should be rtoInitial");
+        assert_eq!(RTO_INITIAL, m.get_rto(), "should be rtoInitial");
+        assert_eq!(0, m.srtt, "should be 0");
+        assert_eq!(0.0, m.rttvar, "should be 0.0");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_rto_manager_rto_calculation_small_rtt() -> Result<()> {
+        let mut m = RtoManager::new();
+        let exp = vec![
+            1800, 1500, 1275, 1106, 1000, // capped at RTO.Min
+        ];
+
+        for i in 0..5 {
+            m.set_new_rtt(600);
+            let rto = m.get_rto();
+            assert_eq!(exp[i], rto, "should be equal: {}", i);
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_rto_manager_rto_calculation_large_rtt() -> Result<()> {
+        let mut m = RtoManager::new();
+        let exp = vec![
+            60000, // capped at RTO.Max
+            60000, // capped at RTO.Max
+            60000, // capped at RTO.Max
+            55312, 48984,
+        ];
+
+        for i in 0..5 {
+            m.set_new_rtt(30000);
+            let rto = m.get_rto();
+            assert_eq!(exp[i], rto, "should be equal: {}", i);
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_rto_manager_calculate_next_timeout() -> Result<()> {
+        let rto = calculate_next_timeout(1, 0);
+        assert_eq!(1, rto, "should match");
+        let rto = calculate_next_timeout(1, 1);
+        assert_eq!(2, rto, "should match");
+        let rto = calculate_next_timeout(1, 2);
+        assert_eq!(4, rto, "should match");
+        let rto = calculate_next_timeout(1, 30);
+        assert_eq!(60000, rto, "should match");
+        let rto = calculate_next_timeout(1, 63);
+        assert_eq!(60000, rto, "should match");
+        let rto = calculate_next_timeout(1, 64);
+        assert_eq!(60000, rto, "should match");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_rto_manager_reset() -> Result<()> {
+        let mut m = RtoManager::new();
+        for _ in 0..10 {
+            m.set_new_rtt(200);
+        }
+
+        m.reset();
+        assert_eq!(RTO_INITIAL, m.get_rto(), "should be rtoInitial");
+        assert_eq!(0, m.srtt, "should be 0");
+        assert_eq!(0.0, m.rttvar, "should be 0");
+
+        Ok(())
     }
 }
