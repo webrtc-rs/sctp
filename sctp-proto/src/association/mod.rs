@@ -1462,7 +1462,7 @@ impl Association {
             }
             Ok(None)
         } else {
-            Err(Error::ErrParamterType)
+            Err(Error::ErrParameterType)
         }
     }
 

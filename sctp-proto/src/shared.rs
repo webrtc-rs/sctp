@@ -1,5 +1,6 @@
-use bytes::BytesMut;
-use std::{net::SocketAddr, time::Instant};
+use crate::Transmit;
+
+use std::time::Instant;
 
 /// Events sent from an Endpoint to a Association
 #[derive(Debug)]
@@ -8,13 +9,7 @@ pub struct AssociationEvent(pub(crate) AssociationEventInner);
 #[derive(Debug)]
 pub(crate) enum AssociationEventInner {
     /// A datagram has been received for the Association
-    Datagram {
-        now: Instant,
-        remote: SocketAddr,
-        ecn: Option<EcnCodepoint>,
-        //TODO:first_decode: PartialDecode,
-        remaining: Option<BytesMut>,
-    },
+    Datagram(Transmit),
     /// New Association identifiers have been issued for the Association
     NewIdentifiers(Vec<IssuedAid>, Instant),
 }
