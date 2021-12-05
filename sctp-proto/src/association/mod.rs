@@ -677,7 +677,7 @@ impl Association {
 
     /// caller must hold self.lock
     fn send_init(&mut self) -> Result<()> {
-        if let Some(stored_init) = self.stored_init.take() {
+        if let Some(stored_init) = &self.stored_init {
             debug!("[{}] sending INIT", self.side);
 
             self.source_port = 5000; // Spec??
@@ -687,7 +687,7 @@ impl Association {
                 source_port: self.source_port,
                 destination_port: self.destination_port,
                 verification_tag: self.peer_verification_tag,
-                chunks: vec![Box::new(stored_init)],
+                chunks: vec![Box::new(stored_init.clone())],
             };
 
             self.control_queue.push_back(outbound);
