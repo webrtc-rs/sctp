@@ -49,8 +49,11 @@ mod timer;
 mod association_test;
 
 /// Reasons why a connection might be lost
-#[derive(Debug, Error, Clone, PartialEq, Eq)]
+#[derive(Debug, Error, PartialEq)]
 pub enum ConnectionError {
+    /// Handshake failed
+    #[error("{0}")]
+    HandshakeFailed(#[from] Error),
     /// The peer violated the QUIC specification as understood by this implementation
     #[error("transport error")]
     TransportError,
@@ -181,8 +184,9 @@ pub struct Association {
     stored_cookie_echo: Option<ChunkCookieEcho>,
     pub(crate) streams: FxHashMap<u16, StreamState>,
 
+    events: VecDeque<Event>,
     // local error
-    silent_error: Option<Error>,
+    error: Option<ConnectionError>,
 
     // per inbound packet context
     delayed_ack_triggered: bool,
@@ -243,7 +247,7 @@ impl Association {
             min_tsn2measure_rtt: tsn,
             cumulative_tsn_ack_point: tsn - 1,
             advanced_peer_tsn_ack_point: tsn - 1,
-            silent_error: Some(Error::ErrSilentlyDiscard),
+            error: None,
 
             ..Default::default()
         };
@@ -276,17 +280,17 @@ impl Association {
     /// - a call was made to `handle_timeout`
     #[must_use]
     pub fn poll(&mut self) -> Option<Event> {
-        /*TODO: if let Some(x) = self.events.pop_front() {
+        if let Some(x) = self.events.pop_front() {
             return Some(x);
         }
 
-        if let Some(event) = self.streams.poll() {
+        /*TODO: if let Some(event) = self.streams.poll() {
             return Some(Event::Stream(event));
-        }
+        }*/
 
         if let Some(err) = self.error.take() {
             return Some(Event::ConnectionLost { reason: err });
-        }*/
+        }
 
         None
     }
@@ -929,6 +933,7 @@ impl Association {
                     self.timers.stop(Timer::T1Cookie);
                     self.stored_cookie_echo = None;
 
+                    self.events.push_back(Event::Connected);
                     self.set_state(AssociationState::Established);
                     self.handshake_completed = true;
                 }
@@ -961,6 +966,7 @@ impl Association {
         self.timers.stop(Timer::T1Cookie);
         self.stored_cookie_echo = None;
 
+        self.events.push_back(Event::Connected);
         self.set_state(AssociationState::Established);
         self.handshake_completed = true;
 
@@ -1012,6 +1018,7 @@ impl Association {
 
         if stream_handle_data {
             if let Some(s) = self.streams.get_mut(&d.stream_identifier) {
+                self.events.push_back(Event::DatagramReceived);
                 s.handle_data(d);
             }
         }
@@ -2462,9 +2469,7 @@ impl Association {
     }
 
     fn awake_write_loop(&self) {
-        /*TODO: if let Some(awake_write_loop_ch) = &self.awake_write_loop_ch {
-            let _ = awake_write_loop_ch.try_send(());
-        }*/
+        // No Op on Purpose
     }
 
     fn close_all_timers(&mut self) {
@@ -2600,20 +2605,14 @@ impl Association {
         match id {
             Timer::T1Init => {
                 error!("[{}] retransmission failure: T1-init", self.side);
-                /*TODO:if let Some(handshake_completed_ch) = &self.handshake_completed_ch_tx {
-                    let _ = handshake_completed_ch
-                        .send(Some(Error::ErrHandshakeInitAck))
-                        .await;
-                }*/
+                self.error = Some(ConnectionError::HandshakeFailed(Error::ErrHandshakeInitAck));
             }
 
             Timer::T1Cookie => {
                 error!("[{}] retransmission failure: T1-cookie", self.side);
-                /*TODO: if let Some(handshake_completed_ch) = &self.handshake_completed_ch_tx {
-                    let _ = handshake_completed_ch
-                        .send(Some(Error::ErrHandshakeCookieEcho))
-                        .await;
-                }*/
+                self.error = Some(ConnectionError::HandshakeFailed(
+                    Error::ErrHandshakeCookieEcho,
+                ));
             }
 
             Timer::T2Shutdown => {
