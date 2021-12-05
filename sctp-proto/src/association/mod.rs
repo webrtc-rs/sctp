@@ -25,7 +25,7 @@ use crate::param::{
     param_supported_extensions::ParamSupportedExtensions, Param,
 };
 use crate::queue::{payload_queue::PayloadQueue, pending_queue::PendingQueue};
-use crate::shared::AssociationId;
+use crate::shared::{AssociationId, EndpointEvent, EndpointEventInner};
 use crate::stream::{ReliabilityType, Stream, StreamEvent, StreamState};
 use crate::util::{sna16lt, sna32gt, sna32gte, sna32lt, sna32lte};
 use crate::{Side, Transmit};
@@ -185,7 +185,7 @@ pub struct Association {
     pub(crate) streams: FxHashMap<u16, StreamState>,
 
     events: VecDeque<Event>,
-    // local error
+    endpoint_events: VecDeque<EndpointEventInner>,
     error: Option<ConnectionError>,
 
     // per inbound packet context
@@ -273,13 +273,13 @@ impl Association {
         this
     }
 
-    /// Returns application-facing events
+    /// Returns application-facing event
     ///
     /// Connections should be polled for events after:
-    /// - a call was made to `handle_event`
+    /// - a call was made to `handle_transmit`
     /// - a call was made to `handle_timeout`
     #[must_use]
-    pub fn poll(&mut self) -> Option<Event> {
+    pub fn poll_event(&mut self) -> Option<Event> {
         if let Some(x) = self.events.pop_front() {
             return Some(x);
         }
@@ -295,11 +295,17 @@ impl Association {
         None
     }
 
+    /// Return endpoint-facing event
+    #[must_use]
+    pub fn poll_endpoint_event(&mut self) -> Option<EndpointEvent> {
+        self.endpoint_events.pop_front().map(EndpointEvent)
+    }
+
     /// Returns the next time at which `handle_timeout` should be called
     ///
     /// The value returned may change after:
     /// - the application performed some I/O on the connection
-    /// - a call was made to `handle_event`
+    /// - a call was made to `handle_transmit`
     /// - a call to `poll_transmit` returned `Some`
     /// - a call was made to `handle_timeout`
     #[must_use]
@@ -394,9 +400,9 @@ impl Association {
         !self.handshake_completed
     }
 
-    /// Whether the connection is closed
+    /// Whether the Association is closed
     ///
-    /// Closed connections cannot transport any further data. A connection becomes closed when
+    /// Closed Associations cannot transport any further data. A connection becomes closed when
     /// either peer application intentionally closes it, or when either transport layer detects an
     /// error such as a time-out or certificate validation failure.
     ///
@@ -441,7 +447,7 @@ impl Association {
     /// Shutdown initiates the shutdown sequence. The method blocks until the
     /// shutdown sequence is completed and the connection is closed, or until the
     /// passed context is done, in which case the context's error is returned.
-    pub(crate) fn shutdown(&mut self) -> Result<()> {
+    pub fn shutdown(&mut self) -> Result<()> {
         debug!("[{}] closing association..", self.side);
 
         let state = self.state();
@@ -459,11 +465,13 @@ impl Association {
             self.set_state(AssociationState::ShutdownSent);
         }
 
+        self.endpoint_events.push_back(EndpointEventInner::Drained);
+
         Ok(())
     }
 
     /// Close ends the SCTP Association and cleans up any state
-    pub(crate) fn close(&mut self) -> Result<()> {
+    pub fn close(&mut self) -> Result<()> {
         if self.state() != AssociationState::Closed {
             self.set_state(AssociationState::Closed);
 
