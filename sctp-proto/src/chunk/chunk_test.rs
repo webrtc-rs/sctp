@@ -582,9 +582,11 @@ fn test_chrome_chunk2_init_ack() -> Result<()> {
 #[test]
 fn test_init_marshal_unmarshal() -> Result<()> {
     let mut p = Packet {
-        destination_port: 1,
-        source_port: 1,
-        verification_tag: 123,
+        common_header: CommonHeader {
+            destination_port: 1,
+            source_port: 1,
+            verification_tag: 123,
+        },
         chunks: vec![],
     };
 

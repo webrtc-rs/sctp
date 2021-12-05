@@ -17,7 +17,7 @@ use crate::config::{
     ServerConfig, TransportConfig, COMMON_HEADER_SIZE, DATA_CHUNK_HEADER_SIZE, INITIAL_MTU,
 };
 use crate::error::{Error, Result};
-use crate::packet::Packet;
+use crate::packet::{CommonHeader, Packet};
 use crate::param::param_reconfig_response::{ParamReconfigResponse, ReconfigResult};
 use crate::param::{
     param_heartbeat_info::ParamHeartbeatInfo,
@@ -31,6 +31,7 @@ use crate::util::{sna16lt, sna32gt, sna32gte, sna32lt, sna32lte};
 use crate::{Side, Transmit};
 use timer::{RtoManager, Timer, TimerTable, ACK_INTERVAL};
 
+use crate::chunk::chunk_init::ChunkInitAck;
 use bytes::Bytes;
 use fxhash::FxHashMap;
 use rand::random;
@@ -684,9 +685,11 @@ impl Association {
             self.destination_port = 5000; // Spec??
 
             let outbound = Packet {
-                source_port: self.source_port,
-                destination_port: self.destination_port,
-                verification_tag: self.peer_verification_tag,
+                common_header: CommonHeader {
+                    source_port: self.source_port,
+                    destination_port: self.destination_port,
+                    verification_tag: self.peer_verification_tag,
+                },
                 chunks: vec![Box::new(stored_init.clone())],
             };
 
@@ -705,9 +708,11 @@ impl Association {
             debug!("[{}] sending COOKIE-ECHO", self.side);
 
             let outbound = Packet {
-                source_port: self.source_port,
-                destination_port: self.destination_port,
-                verification_tag: self.peer_verification_tag,
+                common_header: CommonHeader {
+                    source_port: self.source_port,
+                    destination_port: self.destination_port,
+                    verification_tag: self.peer_verification_tag,
+                },
                 chunks: vec![Box::new(stored_cookie_echo.clone())],
             };
 
@@ -841,8 +846,8 @@ impl Association {
         self.my_max_num_outbound_streams =
             std::cmp::min(i.num_outbound_streams, self.my_max_num_outbound_streams);
         self.peer_verification_tag = i.initiate_tag;
-        self.source_port = p.destination_port;
-        self.destination_port = p.source_port;
+        self.source_port = p.common_header.destination_port;
+        self.destination_port = p.common_header.source_port;
 
         // 13.2 This is the last TSN received in sequence.  This value
         // is set initially by taking the peer's initial TSN,
@@ -869,9 +874,11 @@ impl Association {
         }
 
         let mut outbound = Packet {
-            verification_tag: self.peer_verification_tag,
-            source_port: self.source_port,
-            destination_port: self.destination_port,
+            common_header: CommonHeader {
+                verification_tag: self.peer_verification_tag,
+                source_port: self.source_port,
+                destination_port: self.destination_port,
+            },
             ..Default::default()
         };
 
@@ -900,7 +907,12 @@ impl Association {
         Ok(vec![outbound])
     }
 
-    fn handle_init_ack(&mut self, p: &Packet, i: &ChunkInit, now: Instant) -> Result<Vec<Packet>> {
+    fn handle_init_ack(
+        &mut self,
+        p: &Packet,
+        i: &ChunkInitAck,
+        now: Instant,
+    ) -> Result<Vec<Packet>> {
         let state = self.state();
         debug!("[{}] chunkInitAck received in state '{}'", self.side, state);
         if state != AssociationState::CookieWait {
@@ -923,7 +935,9 @@ impl Association {
         } else {
             i.initial_tsn - 1
         };
-        if self.source_port != p.destination_port || self.destination_port != p.source_port {
+        if self.source_port != p.common_header.destination_port
+            || self.destination_port != p.common_header.source_port
+        {
             warn!("[{}] handle_init_ack: port mismatch", self.side);
             return Ok(vec![]);
         }
@@ -987,9 +1001,11 @@ impl Association {
         if let Some(p) = c.params.first() {
             if let Some(hbi) = p.as_any().downcast_ref::<ParamHeartbeatInfo>() {
                 return Ok(vec![Packet {
-                    verification_tag: self.peer_verification_tag,
-                    source_port: self.source_port,
-                    destination_port: self.destination_port,
+                    common_header: CommonHeader {
+                        verification_tag: self.peer_verification_tag,
+                        source_port: self.source_port,
+                        destination_port: self.destination_port,
+                    },
                     chunks: vec![Box::new(ChunkHeartbeatAck {
                         params: vec![Box::new(ParamHeartbeatInfo {
                             heartbeat_information: hbi.heartbeat_information.clone(),
@@ -1043,9 +1059,11 @@ impl Association {
         }
 
         Ok(vec![Packet {
-            verification_tag: self.peer_verification_tag,
-            source_port: self.source_port,
-            destination_port: self.destination_port,
+            common_header: CommonHeader {
+                verification_tag: self.peer_verification_tag,
+                source_port: self.source_port,
+                destination_port: self.destination_port,
+            },
             chunks: vec![Box::new(ChunkCookieAck {})],
         }])
     }
@@ -1276,9 +1294,11 @@ impl Association {
             };
 
             let outbound = Packet {
-                verification_tag: self.peer_verification_tag,
-                source_port: self.source_port,
-                destination_port: self.destination_port,
+                common_header: CommonHeader {
+                    verification_tag: self.peer_verification_tag,
+                    source_port: self.source_port,
+                    destination_port: self.destination_port,
+                },
                 chunks: vec![Box::new(cerr)],
             };
             return Ok(vec![outbound]);
@@ -1803,9 +1823,11 @@ impl Association {
     /// The caller should hold the read lock.
     fn create_packet(&self, chunks: Vec<Box<dyn Chunk + Send + Sync>>) -> Packet {
         Packet {
-            verification_tag: self.peer_verification_tag,
-            source_port: self.source_port,
-            destination_port: self.destination_port,
+            common_header: CommonHeader {
+                verification_tag: self.peer_verification_tag,
+                source_port: self.source_port,
+                destination_port: self.destination_port,
+            },
             chunks,
         }
     }

@@ -74,6 +74,8 @@ pub(crate) struct ChunkInit {
     pub(crate) params: Vec<Box<dyn Param + Send + Sync>>,
 }
 
+pub(crate) type ChunkInitAck = ChunkInit;
+
 pub(crate) const INIT_CHUNK_MIN_LENGTH: usize = 16;
 pub(crate) const INIT_OPTIONAL_VAR_HEADER_LENGTH: usize = 4;
 

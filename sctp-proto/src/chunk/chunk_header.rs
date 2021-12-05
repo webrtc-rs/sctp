@@ -18,7 +18,7 @@ use std::fmt;
 ///|                          Chunk Value                          |
 ///|                                                               |
 ///+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-#[derive(Debug, Clone)]
+#[derive(Default, Debug, Clone)]
 pub(crate) struct ChunkHeader {
     pub(crate) typ: ChunkType,
     pub(crate) flags: u8,

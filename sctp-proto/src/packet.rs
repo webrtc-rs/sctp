@@ -51,11 +51,24 @@ use std::fmt;
 ///+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ///|                           Checksum                            |
 ///+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
 #[derive(Default, Debug)]
-pub(crate) struct Packet {
+pub(crate) struct CommonHeader {
     pub(crate) source_port: u16,
     pub(crate) destination_port: u16,
     pub(crate) verification_tag: u32,
+}
+
+#[derive(Default, Debug)]
+pub(crate) struct PartialDecode {
+    pub(crate) common_header: CommonHeader,
+    pub(crate) chunk_header: ChunkHeader,
+    pub(crate) initial_tag: Option<u32>,
+}
+
+#[derive(Default, Debug)]
+pub(crate) struct Packet {
+    pub(crate) common_header: CommonHeader,
     pub(crate) chunks: Vec<Box<dyn Chunk + Send + Sync>>,
 }
 
@@ -68,7 +81,9 @@ impl fmt::Display for Packet {
         destination_port: {}
         verification_tag: {}
         ",
-            self.source_port, self.destination_port, self.verification_tag,
+            self.common_header.source_port,
+            self.common_header.destination_port,
+            self.common_header.verification_tag,
         );
         for chunk in &self.chunks {
             res += format!("Chunk: {}", chunk).as_str();
@@ -134,9 +149,11 @@ impl Packet {
         }
 
         Ok(Packet {
-            source_port,
-            destination_port,
-            verification_tag,
+            common_header: CommonHeader {
+                source_port,
+                destination_port,
+                verification_tag,
+            },
             chunks,
         })
     }
@@ -144,9 +161,9 @@ impl Packet {
     pub(crate) fn marshal_to(&self, writer: &mut BytesMut) -> Result<usize> {
         // Populate static headers
         // 8-12 is Checksum which will be populated when packet is complete
-        writer.put_u16(self.source_port);
-        writer.put_u16(self.destination_port);
-        writer.put_u32(self.verification_tag);
+        writer.put_u16(self.common_header.source_port);
+        writer.put_u16(self.common_header.destination_port);
+        writer.put_u32(self.common_header.verification_tag);
 
         // Populate chunks
         let mut raw = BytesMut::new();
@@ -192,7 +209,7 @@ impl Packet {
         // destination port, and possibly the destination IP address to
         // identify the association to which this packet belongs.  The port
         // number 0 MUST NOT be used.
-        if self.source_port == 0 {
+        if self.common_header.source_port == 0 {
             return Err(Error::ErrSctpPacketSourcePortZero);
         }
 
@@ -200,7 +217,7 @@ impl Packet {
         // The receiving host will use this port number to de-multiplex the
         // SCTP packet to the correct receiving endpoint/application.  The
         // port number 0 MUST NOT be used.
-        if self.destination_port == 0 {
+        if self.common_header.destination_port == 0 {
             return Err(Error::ErrSctpPacketDestinationPortZero);
         }
 
@@ -217,7 +234,7 @@ impl Packet {
 
                     // A packet containing an INIT chunk MUST have a zero Verification
                     // Tag.
-                    if self.verification_tag != 0 {
+                    if self.common_header.verification_tag != 0 {
                         return Err(Error::ErrInitChunkVerifyTagNotZero);
                     }
                 }
@@ -246,19 +263,19 @@ mod test {
         let pkt = Packet::unmarshal(&header_only)?;
         //assert!(result.o(), "Unmarshal failed for SCTP packet with no chunks: {}", result);
         assert_eq!(
-            pkt.source_port, 5000,
+            pkt.common_header.source_port, 5000,
             "Unmarshal passed for SCTP packet, but got incorrect source port exp: {} act: {}",
-            5000, pkt.source_port
+            5000, pkt.common_header.source_port
         );
         assert_eq!(
-            pkt.destination_port, 5000,
+            pkt.common_header.destination_port, 5000,
             "Unmarshal passed for SCTP packet, but got incorrect destination port exp: {} act: {}",
-            5000, pkt.destination_port
+            5000, pkt.common_header.destination_port
         );
         assert_eq!(
-            pkt.verification_tag, 0,
+            pkt.common_header.verification_tag, 0,
             "Unmarshal passed for SCTP packet, but got incorrect verification tag exp: {} act: {}",
-            0, pkt.verification_tag
+            0, pkt.common_header.verification_tag
         );
 
         let raw_chunk = Bytes::from_static(&[
