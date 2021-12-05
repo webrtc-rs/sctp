@@ -16,10 +16,10 @@ pub(crate) const DEFAULT_MAX_MESSAGE_SIZE: u32 = 65536;
 /// a single structure
 #[derive(Debug)]
 pub struct TransportConfig {
-    pub(crate) max_receive_buffer_size: u32,
-    pub(crate) max_message_size: u32,
-    pub(crate) max_num_outbound_streams: u16,
-    pub(crate) max_num_inbound_streams: u16,
+    max_receive_buffer_size: u32,
+    max_message_size: u32,
+    max_num_outbound_streams: u16,
+    max_num_inbound_streams: u16,
 }
 
 impl Default for TransportConfig {
@@ -34,24 +34,40 @@ impl Default for TransportConfig {
 }
 
 impl TransportConfig {
-    pub fn max_receive_buffer_size(&mut self, value: u32) -> &mut Self {
+    pub fn with_max_receive_buffer_size(mut self, value: u32) -> Self {
         self.max_receive_buffer_size = value;
         self
     }
 
-    pub fn max_message_size(&mut self, value: u32) -> &mut Self {
+    pub fn with_max_message_size(mut self, value: u32) -> Self {
         self.max_message_size = value;
         self
     }
 
-    pub fn max_num_outbound_streams(&mut self, value: u16) -> &mut Self {
+    pub fn with_max_num_outbound_streams(mut self, value: u16) -> Self {
         self.max_num_outbound_streams = value;
         self
     }
 
-    pub fn max_num_inbound_streams(&mut self, value: u16) -> &mut Self {
+    pub fn with_max_num_inbound_streams(mut self, value: u16) -> Self {
         self.max_num_inbound_streams = value;
         self
+    }
+
+    pub(crate) fn max_receive_buffer_size(&self) -> u32 {
+        self.max_receive_buffer_size
+    }
+
+    pub(crate) fn max_message_size(&self) -> u32 {
+        self.max_message_size
+    }
+
+    pub(crate) fn max_num_outbound_streams(&self) -> u16 {
+        self.max_num_outbound_streams
+    }
+
+    pub(crate) fn max_num_inbound_streams(&self) -> u16 {
+        self.max_num_inbound_streams
     }
 }
 

@@ -36,6 +36,7 @@ use fxhash::FxHashMap;
 use rand::random;
 use std::collections::{HashMap, VecDeque};
 use std::net::{IpAddr, SocketAddr};
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use thiserror::Error;
@@ -113,7 +114,7 @@ pub enum Event {
 ///
 /// No Closed state is illustrated since if a
 /// association is Closed its TCB SHOULD be removed.
-#[derive(Default, Debug)]
+#[derive(Debug)]
 pub struct Association {
     side: Side,
     state: AssociationState,
@@ -143,7 +144,7 @@ pub struct Association {
     reconfig_requests: FxHashMap<u32, ParamOutgoingResetRequest>,
 
     // Non-RFC internal data
-    remote_addr: Option<SocketAddr>,
+    remote_addr: SocketAddr,
     local_ip: Option<IpAddr>,
     source_port: u16,
     destination_port: u16,
@@ -199,6 +200,95 @@ pub struct Association {
     ack_mode: AckMode,
 }
 
+impl Default for Association {
+    fn default() -> Self {
+        Association {
+            side: Side::default(),
+            state: AssociationState::default(),
+            handshake_completed: false,
+            max_message_size: 0,
+            inflight_queue_length: 0,
+            will_send_shutdown: false,
+            bytes_received: 0,
+            bytes_sent: 0,
+
+            peer_verification_tag: 0,
+            my_verification_tag: 0,
+            my_next_tsn: 0,
+            peer_last_tsn: 0,
+            // for RTT measurement
+            min_tsn2measure_rtt: 0,
+            will_send_forward_tsn: false,
+            will_retransmit_fast: false,
+            will_retransmit_reconfig: false,
+
+            will_send_shutdown_ack: false,
+            will_send_shutdown_complete: false,
+
+            // Reconfig
+            my_next_rsn: 0,
+            reconfigs: FxHashMap::default(),
+            reconfig_requests: FxHashMap::default(),
+
+            // Non-RFC internal data
+            remote_addr: SocketAddr::from_str("0.0.0.0:0").unwrap(),
+            local_ip: None,
+            source_port: 0,
+            destination_port: 0,
+            my_max_num_inbound_streams: 0,
+            my_max_num_outbound_streams: 0,
+            my_cookie: None,
+
+            payload_queue: PayloadQueue::default(),
+            inflight_queue: PayloadQueue::default(),
+            pending_queue: PendingQueue::default(),
+            control_queue: VecDeque::default(),
+            stream_queue: VecDeque::default(),
+
+            mtu: 0,
+            // max DATA chunk payload size
+            max_payload_size: 0,
+            cumulative_tsn_ack_point: 0,
+            advanced_peer_tsn_ack_point: 0,
+            use_forward_tsn: false,
+
+            rto_mgr: RtoManager::default(),
+            timers: TimerTable::default(),
+
+            // Congestion control parameters
+            max_receive_buffer_size: 0,
+            // my congestion window size
+            cwnd: 0,
+            // calculated peer's receiver windows size
+            rwnd: 0,
+            // slow start threshold
+            ssthresh: 0,
+            partial_bytes_acked: 0,
+            in_fast_recovery: false,
+            fast_recover_exit_point: 0,
+
+            // Chunks stored for retransmission
+            stored_init: None,
+            stored_cookie_echo: None,
+            streams: FxHashMap::default(),
+
+            events: VecDeque::default(),
+            endpoint_events: VecDeque::default(),
+            error: None,
+
+            // per inbound packet context
+            delayed_ack_triggered: false,
+            immediate_ack_triggered: false,
+
+            stats: AssociationStats::default(),
+            ack_state: AckState::default(),
+
+            // for testing
+            ack_mode: AckMode::default(),
+        }
+    }
+}
+
 impl Association {
     pub(crate) fn new(
         server_config: Option<Arc<ServerConfig>>,
@@ -227,10 +317,10 @@ impl Association {
         let mut this = Association {
             side,
             handshake_completed: false,
-            max_receive_buffer_size: config.max_receive_buffer_size,
-            max_message_size: config.max_message_size,
-            my_max_num_outbound_streams: config.max_num_outbound_streams,
-            my_max_num_inbound_streams: config.max_num_inbound_streams,
+            max_receive_buffer_size: config.max_receive_buffer_size(),
+            max_message_size: config.max_message_size(),
+            my_max_num_outbound_streams: config.max_num_outbound_streams(),
+            my_max_num_inbound_streams: config.max_num_inbound_streams(),
             max_payload_size: INITIAL_MTU - (COMMON_HEADER_SIZE + DATA_CHUNK_HEADER_SIZE),
 
             rto_mgr: RtoManager::new(),
@@ -238,7 +328,7 @@ impl Association {
 
             mtu,
             cwnd,
-            remote_addr: Some(remote_addr),
+            remote_addr,
             local_ip,
 
             my_verification_tag: local_aid,
@@ -328,7 +418,7 @@ impl Association {
             trace!("sending {} datagrams", contents.len());
             Some(Transmit {
                 now,
-                remote: self.remote_addr.unwrap(),
+                remote: self.remote_addr,
                 contents,
                 ecn: None,
                 local_ip: self.local_ip,
@@ -417,7 +507,7 @@ impl Association {
     }
 
     /// The latest socket address for this Association's peer
-    pub fn remote_address(&self) -> Option<SocketAddr> {
+    pub fn remote_address(&self) -> SocketAddr {
         self.remote_addr
     }
 

@@ -414,10 +414,7 @@ fn test_assoc_max_message_size_default() -> Result<()> {
 
 #[test]
 fn test_assoc_max_message_size_explicit() -> Result<()> {
-    let mut a = create_association(TransportConfig {
-        max_message_size: 30000,
-        ..Default::default()
-    });
+    let mut a = create_association(TransportConfig::default().with_max_message_size(30000));
 
     assert_eq!(30000, a.max_message_size, "should match");
 
