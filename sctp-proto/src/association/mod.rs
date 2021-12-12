@@ -879,7 +879,7 @@ impl Association {
                 source_port: self.source_port,
                 destination_port: self.destination_port,
             },
-            ..Default::default()
+            chunks: vec![],
         };
 
         let mut init_ack = ChunkInit {
