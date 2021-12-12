@@ -28,7 +28,7 @@ use crate::queue::{payload_queue::PayloadQueue, pending_queue::PendingQueue};
 use crate::shared::{AssociationId, EndpointEvent, EndpointEventInner};
 use crate::stream::{ReliabilityType, Stream, StreamEvent, StreamState};
 use crate::util::{sna16lt, sna32gt, sna32gte, sna32lt, sna32lte};
-use crate::{Side, Transmit};
+use crate::{Payload, Side, Transmit};
 use timer::{RtoManager, Timer, TimerTable, ACK_INTERVAL};
 
 use crate::chunk::chunk_init::ChunkInitAck;
@@ -420,7 +420,7 @@ impl Association {
             Some(Transmit {
                 now,
                 remote: self.remote_addr,
-                contents,
+                payload: Payload::RawEncode(contents),
                 ecn: None,
                 local_ip: self.local_ip,
             })
@@ -471,10 +471,20 @@ impl Association {
             return;
         }*/
 
-        for data in &transmit.contents {
-            if let Err(err) = self.handle_inbound(data, transmit.now) {
+        if let Payload::PartialDecode(partial_decode) = transmit.payload {
+            let pkt = match partial_decode.finish() {
+                Ok(p) => p,
+                Err(err) => {
+                    warn!("[{}] unable to parse SCTP packet {}", self.side, err);
+                    return;
+                }
+            };
+
+            if let Err(err) = self.handle_inbound(pkt, transmit.now) {
                 error!("handle_inbound got err: {}", err);
             }
+        } else {
+            trace!("discarding invalid partial_decode");
         }
     }
 
@@ -726,15 +736,7 @@ impl Association {
     }
 
     /// handle_inbound parses incoming raw packets
-    fn handle_inbound(&mut self, raw: &Bytes, now: Instant) -> Result<()> {
-        let p = match Packet::unmarshal(raw) {
-            Ok(p) => p,
-            Err(err) => {
-                warn!("[{}] unable to parse SCTP packet {}", self.side, err);
-                return Ok(());
-            }
-        };
-
+    fn handle_inbound(&mut self, p: Packet, now: Instant) -> Result<()> {
         if let Err(err) = p.check_packet() {
             warn!("[{}] failed validating packet {}", self.side, err);
             return Ok(());

@@ -62,7 +62,7 @@ pub(crate) struct CommonHeader {
 }
 
 #[derive(Default, Debug)]
-pub(crate) struct PartialDecode {
+pub struct PartialDecode {
     pub(crate) common_header: CommonHeader,
     pub(crate) remaining: Bytes,
     pub(crate) first_chunk_type: ChunkType,

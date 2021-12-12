@@ -18,6 +18,7 @@
 
 use crate::shared::EcnCodepoint;
 
+use crate::packet::PartialDecode;
 use bytes::Bytes;
 use std::time::Instant;
 use std::{
@@ -89,6 +90,12 @@ impl ops::Not for Side {
     }
 }
 
+#[derive(Debug)]
+pub enum Payload {
+    PartialDecode(PartialDecode),
+    RawEncode(Vec<Bytes>),
+}
+
 /// Incoming/outgoing Transmit
 #[derive(Debug)]
 pub struct Transmit {
@@ -98,8 +105,8 @@ pub struct Transmit {
     pub remote: SocketAddr,
     /// Explicit congestion notification bits to set on the packet
     pub ecn: Option<EcnCodepoint>,
-    /// Contents of the datagram
-    pub contents: Vec<Bytes>,
+    /// Payload of the datagram
+    pub payload: Payload,
     /// Optional local IP address for the datagram
     pub local_ip: Option<IpAddr>,
 }

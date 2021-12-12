@@ -14,10 +14,11 @@ use crate::shared::{
     AssociationEvent, AssociationEventInner, AssociationId, EndpointEvent, EndpointEventInner,
     IssuedAid,
 };
-use crate::{EcnCodepoint, Transmit};
+use crate::{EcnCodepoint, Payload, Transmit};
 
+use crate::packet::PartialDecode;
 use crate::util::{AssociationIdGenerator, RandomAssociationIdGenerator};
-use bytes::BytesMut; //{BufMut, Bytes, };
+use bytes::Bytes; //, BytesMut, BufMut, Bytes, };
 use fxhash::FxHashMap;
 use rand::{rngs::StdRng, /*Rng, RngCore,*/ SeedableRng};
 use slab::Slab;
@@ -116,57 +117,17 @@ impl Endpoint {
     /// Process an incoming UDP datagram
     pub fn handle(
         &mut self,
-        _now: Instant,
-        _remote: SocketAddr,
-        _local_ip: Option<IpAddr>,
-        _ecn: Option<EcnCodepoint>,
-        _data: BytesMut,
+        now: Instant,
+        remote: SocketAddr,
+        local_ip: Option<IpAddr>,
+        ecn: Option<EcnCodepoint>,
+        data: Bytes,
     ) -> Option<(AssociationHandle, DatagramEvent)> {
-        /*let datagram_len = data.len();
-        let (first_decode, remaining) = match PartialDecode::new(
-            data,
-            self.local_cid_generator.cid_len(),
-            &self.config.supported_versions,
-        ) {
+        //let datagram_len = data.len();
+        let partial_decode = match PartialDecode::unmarshal(&data) {
             Ok(x) => x,
-            Err(PacketDecodeError::UnsupportedVersion {
-                src_cid,
-                dst_cid,
-                version,
-            }) => {
-                if self.server_config.is_none() {
-                    debug!("dropping packet with unsupported version");
-                    return None;
-                }
-                trace!("sending version negotiation");
-                // Negotiate versions
-                let mut buf = Vec::<u8>::new();
-                Header::VersionNegotiate {
-                    random: self.rng.gen::<u8>() | 0x40,
-                    src_cid: dst_cid,
-                    dst_cid: src_cid,
-                }
-                .encode(&mut buf);
-                // Grease with a reserved version
-                if version != 0x0a1a_2a3a {
-                    buf.write::<u32>(0x0a1a_2a3a);
-                } else {
-                    buf.write::<u32>(0x0a1a_2a4a);
-                }
-                for &version in &self.config.supported_versions {
-                    buf.write(version);
-                }
-                self.transmits.push_back(Transmit {
-                    destination: remote,
-                    ecn: None,
-                    contents: buf,
-                    segment_size: None,
-                    src_ip: local_ip,
-                });
-                return None;
-            }
-            Err(e) => {
-                trace!("malformed header: {}", e);
+            Err(err) => {
+                trace!("malformed header: {}", err);
                 return None;
             }
         };
@@ -175,35 +136,29 @@ impl Endpoint {
         // Handle packet on existing connection, if any
         //
 
-        let dst_cid = first_decode.dst_cid();
-        let known_ch = {
-            let ch = if self.local_cid_generator.cid_len() > 0 {
-                self.connection_ids.get(&dst_cid)
-            } else {
-                None
-            };
-            ch.or_else(|| {
-                if first_decode.is_initial() || first_decode.is_0rtt() {
-                    self.connection_ids_initial.get(&dst_cid)
-                } else {
-                    None
-                }
-            })
-            .cloned()
+        let dst_cid = partial_decode.common_header.verification_tag;
+        let known_ch = if dst_cid > 0 {
+            self.connection_ids.get(&dst_cid).cloned()
+        } else {
+            None
         };
+
         if let Some(ch) = known_ch {
             return Some((
                 ch,
-                DatagramEvent::ConnectionEvent(ConnectionEvent(ConnectionEventInner::Datagram {
-                    now,
-                    remote,
-                    ecn,
-                    first_decode,
-                    remaining,
-                })),
+                DatagramEvent::AssociationEvent(AssociationEvent(AssociationEventInner::Datagram(
+                    Transmit {
+                        now,
+                        remote,
+                        ecn,
+                        payload: Payload::PartialDecode(partial_decode),
+                        local_ip,
+                    },
+                ))),
             ));
         }
 
+        /*
         //
         // Potentially create a new connection
         //
