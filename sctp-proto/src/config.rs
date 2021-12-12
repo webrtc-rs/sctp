@@ -155,47 +155,34 @@ impl fmt::Debug for EndpointConfig {
 /// Parameters governing incoming connections
 ///
 /// Default values should be suitable for most internet applications.
-#[derive(Clone)]
+#[derive(Default, Clone)]
 pub struct ServerConfig {
     /// Transport configuration to use for incoming connections
     pub transport: Arc<TransportConfig>,
-}
 
-impl Default for ServerConfig {
-    fn default() -> Self {
-        Self::new()
-    }
+    /// Maximum number of concurrent connections
+    pub(crate) concurrent_connections: u32,
 }
 
 impl ServerConfig {
     /// Create a default config with a particular handshake token key
     pub fn new() -> Self {
-        Self {
-            transport: Arc::new(TransportConfig::default()),
-        }
+        ServerConfig::default()
     }
 }
 
 /// Configuration for outgoing connections
 ///
 /// Default values should be suitable for most internet applications.
-#[derive(Clone)]
+#[derive(Default, Clone)]
 pub struct ClientConfig {
     /// Transport configuration to use
     pub transport: Arc<TransportConfig>,
 }
 
-impl Default for ClientConfig {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl ClientConfig {
     /// Create a default config with a particular cryptographic config
     pub fn new() -> Self {
-        Self {
-            transport: Default::default(),
-        }
+        ClientConfig::default()
     }
 }

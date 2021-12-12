@@ -16,6 +16,7 @@ use crate::shared::{
 };
 use crate::{EcnCodepoint, Payload, Transmit};
 
+use crate::chunk::chunk_type::CT_INIT;
 use crate::packet::PartialDecode;
 use crate::util::{AssociationIdGenerator, RandomAssociationIdGenerator};
 use bytes::Bytes; //, BytesMut, BufMut, Bytes, };
@@ -23,7 +24,7 @@ use fxhash::FxHashMap;
 use rand::{rngs::StdRng, /*Rng, RngCore,*/ SeedableRng};
 use slab::Slab;
 use thiserror::Error;
-use tracing::trace; //{debug, trace, warn};
+use tracing::{debug, trace}; //{ trace, warn};
 
 /// The main entry point to the library
 ///
@@ -123,7 +124,6 @@ impl Endpoint {
         ecn: Option<EcnCodepoint>,
         data: Bytes,
     ) -> Option<(AssociationHandle, DatagramEvent)> {
-        //let datagram_len = data.len();
         let partial_decode = match PartialDecode::unmarshal(&data) {
             Ok(x) => x,
             Err(err) => {
@@ -135,12 +135,20 @@ impl Endpoint {
         //
         // Handle packet on existing connection, if any
         //
-
         let dst_cid = partial_decode.common_header.verification_tag;
         let known_ch = if dst_cid > 0 {
             self.connection_ids.get(&dst_cid).cloned()
         } else {
-            None
+            //TODO: improve INIT handling for DoS attack
+            if partial_decode.first_chunk_type == CT_INIT {
+                if let Some(dst_cid) = partial_decode.initiate_tag {
+                    self.connection_ids.get(&dst_cid).cloned()
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
         };
 
         if let Some(ch) = known_ch {
@@ -158,69 +166,11 @@ impl Endpoint {
             ));
         }
 
-        /*
         //
         // Potentially create a new connection
         //
-
-        let server_config = match &self.server_config {
-            Some(config) => config,
-            None => {
-                debug!("packet for unrecognized connection {}", dst_cid);
-                self.stateless_reset(datagram_len, remote, local_ip, &dst_cid);
-                return None;
-            }
-        };
-
-        if let Some(version) = first_decode.initial_version() {
-            if datagram_len < MIN_INITIAL_SIZE as usize {
-                debug!("ignoring short initial for connection {}", dst_cid);
-                return None;
-            }
-
-            let crypto = match server_config
-                .crypto
-                .initial_keys(version, &dst_cid, Side::Server)
-            {
-                Ok(keys) => keys,
-                Err(UnsupportedVersion) => {
-                    // This probably indicates that the user set supported_versions incorrectly in
-                    // `EndpointConfig`.
-                    debug!(
-                        "ignoring initial packet version {:#x} unsupported by cryptographic layer",
-                        version
-                    );
-                    return None;
-                }
-            };
-            return match first_decode.finish(Some(&*crypto.header.remote)) {
-                Ok(packet) => self
-                    .handle_first_packet(now, remote, local_ip, ecn, packet, remaining, &crypto)
-                    .map(|(ch, conn)| (ch, DatagramEvent::NewConnection(conn))),
-                Err(e) => {
-                    trace!("unable to decode initial packet: {}", e);
-                    None
-                }
-            };
-        } else if first_decode.has_long_header() {
-            debug!(
-                "ignoring non-initial packet for unknown connection {}",
-                dst_cid
-            );
-            return None;
-        }
-
-        //
-        // If we got this far, we're a server receiving a seemingly valid packet for an unknown
-        // connection. Send a stateless reset.
-        //
-
-        if !dst_cid.is_empty() {
-            self.stateless_reset(datagram_len, remote, local_ip, &dst_cid);
-        } else {
-            trace!("dropping unrecognized short packet without ID");
-        }*/
-        None
+        self.handle_first_packet(now, remote, local_ip, ecn, partial_decode)
+            .map(|(ch, a)| (ch, DatagramEvent::NewAssociation(a)))
     }
 
     /// Initiate a Association
@@ -277,6 +227,59 @@ impl Endpoint {
                 break aid;
             }
         }
+    }
+
+    fn handle_first_packet(
+        &mut self,
+        now: Instant,
+        remote: SocketAddr,
+        local_ip: Option<IpAddr>,
+        ecn: Option<EcnCodepoint>,
+        partial_decode: PartialDecode,
+    ) -> Option<(AssociationHandle, Association)> {
+        if partial_decode.first_chunk_type != CT_INIT
+            || (partial_decode.first_chunk_type == CT_INIT && partial_decode.initiate_tag.is_none())
+        {
+            debug!("refusing first packet with Non-INIT or emtpy initial_tag INIT");
+            return None;
+        }
+
+        let server_config = self.server_config.as_ref().unwrap();
+
+        if self.connections.len() >= server_config.concurrent_connections as usize
+            || self.reject_new_connections
+            || self.is_full()
+        {
+            debug!("refusing connection");
+            //TODO: self.initial_close();
+            return None;
+        }
+
+        let server_config = server_config.clone();
+        let transport_config = server_config.transport.clone();
+
+        let remote_aid = *partial_decode.initiate_tag.as_ref().unwrap();
+        let local_aid = self.new_aid();
+
+        let (ch, mut conn) = self.add_connection(
+            remote_aid,
+            local_aid,
+            remote,
+            local_ip,
+            now,
+            Some(server_config),
+            transport_config,
+        );
+
+        conn.handle_transmit(Transmit {
+            now,
+            remote,
+            ecn,
+            payload: Payload::PartialDecode(partial_decode),
+            local_ip,
+        });
+
+        Some((ch, conn))
     }
 
     fn add_connection(
