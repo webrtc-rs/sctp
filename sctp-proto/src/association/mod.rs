@@ -2,27 +2,29 @@ use crate::association::{
     state::{AckMode, AckState, AssociationState},
     stats::AssociationStats,
 };
-use crate::chunk::chunk_forward_tsn::ChunkForwardTsnStream;
-use crate::chunk::chunk_payload_data::PayloadProtocolIdentifier;
 use crate::chunk::{
     chunk_abort::ChunkAbort, chunk_cookie_ack::ChunkCookieAck, chunk_cookie_echo::ChunkCookieEcho,
-    chunk_error::ChunkError, chunk_forward_tsn::ChunkForwardTsn, chunk_heartbeat::ChunkHeartbeat,
-    chunk_heartbeat_ack::ChunkHeartbeatAck, chunk_init::ChunkInit,
-    chunk_payload_data::ChunkPayloadData, chunk_reconfig::ChunkReconfig,
-    chunk_selective_ack::ChunkSelectiveAck, chunk_shutdown::ChunkShutdown,
-    chunk_shutdown_ack::ChunkShutdownAck, chunk_shutdown_complete::ChunkShutdownComplete,
-    chunk_type::CT_FORWARD_TSN, Chunk, ErrorCauseUnrecognizedChunkType,
+    chunk_error::ChunkError, chunk_forward_tsn::ChunkForwardTsn,
+    chunk_forward_tsn::ChunkForwardTsnStream, chunk_heartbeat::ChunkHeartbeat,
+    chunk_heartbeat_ack::ChunkHeartbeatAck, chunk_init::ChunkInit, chunk_init::ChunkInitAck,
+    chunk_payload_data::ChunkPayloadData, chunk_payload_data::PayloadProtocolIdentifier,
+    chunk_reconfig::ChunkReconfig, chunk_selective_ack::ChunkSelectiveAck,
+    chunk_shutdown::ChunkShutdown, chunk_shutdown_ack::ChunkShutdownAck,
+    chunk_shutdown_complete::ChunkShutdownComplete, chunk_type::CT_FORWARD_TSN, Chunk,
+    ErrorCauseUnrecognizedChunkType,
 };
 use crate::config::{
     ServerConfig, TransportConfig, COMMON_HEADER_SIZE, DATA_CHUNK_HEADER_SIZE, INITIAL_MTU,
 };
 use crate::error::{Error, Result};
 use crate::packet::{CommonHeader, Packet};
-use crate::param::param_reconfig_response::{ParamReconfigResponse, ReconfigResult};
 use crate::param::{
     param_heartbeat_info::ParamHeartbeatInfo,
-    param_outgoing_reset_request::ParamOutgoingResetRequest, param_state_cookie::ParamStateCookie,
-    param_supported_extensions::ParamSupportedExtensions, Param,
+    param_outgoing_reset_request::ParamOutgoingResetRequest,
+    param_reconfig_response::{ParamReconfigResponse, ReconfigResult},
+    param_state_cookie::ParamStateCookie,
+    param_supported_extensions::ParamSupportedExtensions,
+    Param,
 };
 use crate::queue::{payload_queue::PayloadQueue, pending_queue::PendingQueue};
 use crate::shared::{AssociationId, EndpointEvent, EndpointEventInner};
@@ -31,7 +33,6 @@ use crate::util::{sna16lt, sna32gt, sna32gte, sna32lt, sna32lte};
 use crate::{Payload, Side, Transmit};
 use timer::{RtoManager, Timer, TimerTable, ACK_INTERVAL};
 
-use crate::chunk::chunk_init::ChunkInitAck;
 use bytes::Bytes;
 use fxhash::FxHashMap;
 use rand::random;
@@ -2751,5 +2752,17 @@ impl Association {
 
             _ => {}
         }
+    }
+
+    /// Whether no timers are running
+    #[cfg(test)]
+    pub(crate) fn is_idle(&self) -> bool {
+        Timer::VALUES
+            .iter()
+            //.filter(|&&t| t != Timer::KeepAlive && t != Timer::PushNewCid)
+            .filter_map(|&t| Some((t, self.timers.get(t)?)))
+            .min_by_key(|&(_, time)| time)
+            //.map_or(true, |(timer, _)| timer == Timer::Idle)
+            .is_none()
     }
 }

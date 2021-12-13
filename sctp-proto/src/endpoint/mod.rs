@@ -1,3 +1,6 @@
+#[cfg(test)]
+mod endpoint_test;
+
 use std::{
     collections::{HashMap, VecDeque},
     iter,
@@ -9,22 +12,21 @@ use std::{
 };
 
 use crate::association::Association;
+use crate::chunk::chunk_type::CT_INIT;
 use crate::config::{ClientConfig, EndpointConfig, ServerConfig, TransportConfig};
+use crate::packet::PartialDecode;
 use crate::shared::{
     AssociationEvent, AssociationEventInner, AssociationId, EndpointEvent, EndpointEventInner,
-    IssuedAid,
 };
+use crate::util::{AssociationIdGenerator, RandomAssociationIdGenerator};
 use crate::{EcnCodepoint, Payload, Transmit};
 
-use crate::chunk::chunk_type::CT_INIT;
-use crate::packet::PartialDecode;
-use crate::util::{AssociationIdGenerator, RandomAssociationIdGenerator};
-use bytes::Bytes; //, BytesMut, BufMut, Bytes, };
+use bytes::Bytes;
 use fxhash::FxHashMap;
-use rand::{rngs::StdRng, /*Rng, RngCore,*/ SeedableRng};
+use rand::{rngs::StdRng, SeedableRng};
 use slab::Slab;
 use thiserror::Error;
-use tracing::{debug, trace}; //{ trace, warn};
+use tracing::{debug, trace};
 
 /// The main entry point to the library
 ///
@@ -85,25 +87,9 @@ impl Endpoint {
     /// Process `EndpointEvent`s emitted from related `Connection`s
     ///
     /// In turn, processing this event may return a `ConnectionEvent` for the same `Connection`.
-    pub fn handle_event(
-        &mut self,
-        ch: AssociationHandle,
-        event: EndpointEvent,
-    ) -> Option<AssociationEvent> {
+    pub fn handle_event(&mut self, ch: AssociationHandle, event: EndpointEvent) {
         use EndpointEventInner::*;
         match event.0 {
-            NeedIdentifiers(now, n) => {
-                return Some(self.send_new_identifiers(now, ch, n));
-            }
-            RetireAssociationId(now, seq, allow_more_aids) => {
-                if let Some(cid) = self.connections[ch].loc_cids.remove(&seq) {
-                    trace!("peer retired AID {}: {}", seq, cid);
-                    self.connection_ids.remove(&cid);
-                    if allow_more_aids {
-                        return Some(self.send_new_identifiers(now, ch, 1));
-                    }
-                }
-            }
             Drained => {
                 let conn = self.connections.remove(ch.0);
                 self.connection_ids_init.remove(&conn.init_cid);
@@ -112,7 +98,6 @@ impl Endpoint {
                 }
             }
         }
-        None
     }
 
     /// Process an incoming UDP datagram
@@ -199,25 +184,6 @@ impl Endpoint {
             config.transport,
         );
         Ok((ch, conn))
-    }
-
-    fn send_new_identifiers(
-        &mut self,
-        now: Instant,
-        ch: AssociationHandle,
-        num: u64,
-    ) -> AssociationEvent {
-        let mut ids = vec![];
-        for _ in 0..num {
-            let id = self.new_aid();
-            self.connection_ids.insert(id, ch);
-            let meta = &mut self.connections[ch];
-            meta.cids_issued += 1;
-            let sequence = meta.cids_issued;
-            meta.loc_cids.insert(sequence, id);
-            ids.push(IssuedAid { sequence, id });
-        }
-        AssociationEvent(AssociationEventInner::NewIdentifiers(ids, now))
     }
 
     fn new_aid(&mut self) -> AssociationId {

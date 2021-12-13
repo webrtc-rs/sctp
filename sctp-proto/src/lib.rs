@@ -16,9 +16,9 @@
 #![allow(dead_code)]
 #![allow(clippy::too_many_arguments)]
 
+use crate::packet::PartialDecode;
 use crate::shared::EcnCodepoint;
 
-use crate::packet::PartialDecode;
 use bytes::Bytes;
 use std::time::Instant;
 use std::{
@@ -105,8 +105,8 @@ pub struct Transmit {
     pub remote: SocketAddr,
     /// Explicit congestion notification bits to set on the packet
     pub ecn: Option<EcnCodepoint>,
-    /// Payload of the datagram
-    pub payload: Payload,
     /// Optional local IP address for the datagram
     pub local_ip: Option<IpAddr>,
+    /// Payload of the datagram
+    pub payload: Payload,
 }

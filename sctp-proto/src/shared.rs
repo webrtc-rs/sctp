@@ -1,7 +1,5 @@
 use crate::Transmit;
 
-use std::time::Instant;
-
 /// Events sent from an Endpoint to a Association
 #[derive(Debug)]
 pub struct AssociationEvent(pub(crate) AssociationEventInner);
@@ -10,8 +8,8 @@ pub struct AssociationEvent(pub(crate) AssociationEventInner);
 pub(crate) enum AssociationEventInner {
     /// A datagram has been received for the Association
     Datagram(Transmit),
-    /// New Association identifiers have been issued for the Association
-    NewIdentifiers(Vec<IssuedAid>, Instant),
+    // New Association identifiers have been issued for the Association
+    //NewIdentifiers(Vec<IssuedAid>, Instant),
 }
 
 /// Events sent from a Association to an Endpoint
@@ -39,11 +37,11 @@ impl EndpointEvent {
 pub(crate) enum EndpointEventInner {
     /// The association has been drained
     Drained,
-    /// The association needs association identifiers
+    /*// The association needs association identifiers
     NeedIdentifiers(Instant, u64),
     /// Stop routing Association ID for this sequence number to the Association
     /// When `bool == true`, a new Association ID will be issued to peer
-    RetireAssociationId(Instant, u64, bool),
+    RetireAssociationId(Instant, u64, bool),*/
 }
 
 /// Protocol-level identifier for a Association.
