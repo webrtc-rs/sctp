@@ -199,7 +199,7 @@ pub struct Association {
     ack_state: AckState,
 
     // for testing
-    ack_mode: AckMode,
+    pub(crate) ack_mode: AckMode,
 }
 
 impl Default for Association {
@@ -641,6 +641,18 @@ impl Association {
                 stream_identifier,
                 association: self,
             })
+    }
+
+    /// stream returns a stream
+    pub(crate) fn stream(&mut self, stream_identifier: u16) -> Result<Stream<'_>> {
+        if !self.streams.contains_key(&stream_identifier) {
+            Err(Error::ErrStreamNotExisted)
+        } else {
+            Ok(Stream {
+                stream_identifier,
+                association: self,
+            })
+        }
     }
 
     /// bytes_sent returns the number of bytes sent

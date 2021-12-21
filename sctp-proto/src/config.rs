@@ -155,13 +155,22 @@ impl fmt::Debug for EndpointConfig {
 /// Parameters governing incoming connections
 ///
 /// Default values should be suitable for most internet applications.
-#[derive(Default, Clone)]
+#[derive(Clone)]
 pub struct ServerConfig {
     /// Transport configuration to use for incoming connections
     pub transport: Arc<TransportConfig>,
 
     /// Maximum number of concurrent connections
     pub(crate) concurrent_connections: u32,
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        ServerConfig {
+            transport: Arc::new(TransportConfig::default()),
+            concurrent_connections: 100_000,
+        }
+    }
 }
 
 impl ServerConfig {
@@ -174,10 +183,18 @@ impl ServerConfig {
 /// Configuration for outgoing connections
 ///
 /// Default values should be suitable for most internet applications.
-#[derive(Default, Clone)]
+#[derive(Clone)]
 pub struct ClientConfig {
     /// Transport configuration to use
     pub transport: Arc<TransportConfig>,
+}
+
+impl Default for ClientConfig {
+    fn default() -> Self {
+        ClientConfig {
+            transport: Arc::new(TransportConfig::default()),
+        }
+    }
 }
 
 impl ClientConfig {
