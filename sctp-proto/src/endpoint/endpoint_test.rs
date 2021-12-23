@@ -360,7 +360,7 @@ pub fn subscribe() -> tracing::subscriber::DefaultGuard {
     tracing::subscriber::set_default(sub)
 }
 
-fn create_new_association_pair(
+fn create_association_pair(
     ack_mode: AckMode,
     _recv_buf_size: u32,
 ) -> Result<(Pair, AssociationHandle, AssociationHandle)> {
@@ -413,13 +413,14 @@ fn establish_session_pair(
 
     Ok(())
 }
-/*
-fn close_association_pair(br: &Arc<Bridge>, client: Association, server: Association) {
-    let (handshake0ch_tx, mut handshake0ch_rx) = mpsc::channel(1);
-    let (handshake1ch_tx, mut handshake1ch_rx) = mpsc::channel(1);
-    let (closed_tx, mut closed_rx0) = broadcast::channel::<()>(1);
-    let mut closed_rx1 = closed_tx.subscribe();
 
+fn close_association_pair(
+    _pair: &mut Pair,
+    _client_ch: AssociationHandle,
+    _server_ch: AssociationHandle,
+    _si: u16,
+) {
+    /*TODO:
     // Close client
     tokio::spawn(async move {
         client.close().await?;
@@ -437,42 +438,19 @@ fn close_association_pair(br: &Arc<Bridge>, client: Association, server: Associa
 
         Result::<()>::Ok(())
     });
-
-    let mut a0handshake_done = false;
-    let mut a1handshake_done = false;
-    let mut i = 0;
-    while (!a0handshake_done || !a1handshake_done) && i < 100 {
-        br.tick().await;
-
-        let timer = tokio::time::sleep(Duration::from_millis(10));
-        tokio::pin!(timer);
-
-        tokio::select! {
-            _ = timer.as_mut() =>{},
-            _ = handshake0ch_rx.recv() => {
-                a0handshake_done = true;
-            },
-            _ = handshake1ch_rx.recv() => {
-                a1handshake_done = true;
-            },
-        };
-        i += 1;
-    }
-
-    drop(closed_tx);
+    */
 }
-*/
 
 #[test]
 fn test_assoc_reliable_simple() -> Result<()> {
     //let _guard = subscribe();
 
-    const SI: u16 = 1;
-    const MSG: Bytes = Bytes::from_static(b"ABC");
+    let si: u16 = 1;
+    let msg: Bytes = Bytes::from_static(b"ABC");
 
-    let (mut pair, client_ch, server_ch) = create_new_association_pair(AckMode::NoDelay, 0)?;
+    let (mut pair, client_ch, server_ch) = create_association_pair(AckMode::NoDelay, 0)?;
 
-    establish_session_pair(&mut pair, client_ch, server_ch, SI)?;
+    establish_session_pair(&mut pair, client_ch, server_ch, si)?;
 
     {
         let a = pair.client_conn_mut(client_ch);
@@ -480,27 +458,26 @@ fn test_assoc_reliable_simple() -> Result<()> {
     }
 
     let n = pair
-        .client_stream(client_ch, SI)?
-        .write_sctp(&MSG, PayloadProtocolIdentifier::Binary)?;
-    assert_eq!(MSG.len(), n, "unexpected length of received data");
+        .client_stream(client_ch, si)?
+        .write_sctp(&msg, PayloadProtocolIdentifier::Binary)?;
+    assert_eq!(msg.len(), n, "unexpected length of received data");
     {
         let a = pair.client_conn_mut(client_ch);
-        assert_eq!(MSG.len(), a.buffered_amount(), "incorrect bufferedAmount");
+        assert_eq!(msg.len(), a.buffered_amount(), "incorrect bufferedAmount");
     }
 
     pair.drive();
 
-    let chunks = pair.server_stream(server_ch, SI)?.read_sctp()?.unwrap();
+    let chunks = pair.server_stream(server_ch, si)?.read_sctp()?.unwrap();
     let (n, ppi) = (chunks.len(), chunks.ppi);
-    assert_eq!(n, MSG.len(), "unexpected length of received data");
+    assert_eq!(n, msg.len(), "unexpected length of received data");
     assert_eq!(ppi, PayloadProtocolIdentifier::Binary, "unexpected ppi");
 
     {
-        //let q = s0.reassembly_queue.lock().await;
         let q = &pair
             .client_conn_mut(client_ch)
             .streams
-            .get(&SI)
+            .get(&si)
             .unwrap()
             .reassembly_queue;
         assert!(!q.is_readable(), "should no longer be readable");
@@ -511,7 +488,7 @@ fn test_assoc_reliable_simple() -> Result<()> {
         assert_eq!(0, a.buffered_amount(), "incorrect bufferedAmount");
     }
 
-    //close_association_pair(&br, a0, a1).await;
+    close_association_pair(&mut pair, client_ch, server_ch, si);
 
     Ok(())
 }
