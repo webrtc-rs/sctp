@@ -297,27 +297,17 @@ impl Pair {
     pub fn begin_connect(&mut self, config: ClientConfig) -> AssociationHandle {
         let span = info_span!("client");
         let _guard = span.enter();
-        let (client_ch, client_conn) = self
-            .client
-            .connect(config, self.server.addr) //TODO:, "localhost")
-            .unwrap();
+        let (client_ch, client_conn) = self.client.connect(config, self.server.addr).unwrap();
         self.client.connections.insert(client_ch, client_conn);
         client_ch
     }
 
     fn finish_connect(&mut self, client_ch: AssociationHandle, server_ch: AssociationHandle) {
-        /*TODO:assert_matches!(
-            self.client_conn_mut(client_ch).poll_event(),
-            Some(Event::HandshakeDataReady)
-        );*/
         assert_matches!(
             self.client_conn_mut(client_ch).poll_event(),
             Some(Event::Connected { .. })
         );
-        /*TODO:assert_matches!(
-            self.server_conn_mut(server_ch).poll_event(),
-            Some(Event::HandshakeDataReady)
-        );*/
+
         assert_matches!(
             self.server_conn_mut(server_ch).poll_event(),
             Some(Event::Connected { .. })
@@ -328,41 +318,17 @@ impl Pair {
         self.client.connections.get_mut(&ch).unwrap()
     }
 
-    /*pub fn client_streams(&mut self, ch: AssociationHandle) -> Streams<'_> {
-        self.client_conn_mut(ch).streams()
-    }*/
-
     pub fn client_stream(&mut self, ch: AssociationHandle, si: u16) -> Result<Stream<'_>> {
         self.client_conn_mut(ch).stream(si)
     }
-
-    /*pub fn client_recv(&mut self, ch: AssociationHandle, s: StreamId) -> RecvStream<'_> {
-        self.client_conn_mut(ch).recv_stream(s)
-    }
-
-    pub fn client_datagrams(&mut self, ch: AssociationHandle) -> Datagrams<'_> {
-        self.client_conn_mut(ch).datagrams()
-    }*/
 
     pub fn server_conn_mut(&mut self, ch: AssociationHandle) -> &mut Association {
         self.server.connections.get_mut(&ch).unwrap()
     }
 
-    /*pub fn server_streams(&mut self, ch: AssociationHandle) -> Streams<'_> {
-        self.server_conn_mut(ch).streams()
-    }*/
-
     pub fn server_stream(&mut self, ch: AssociationHandle, si: u16) -> Result<Stream<'_>> {
         self.server_conn_mut(ch).stream(si)
     }
-
-    /*pub fn server_recv(&mut self, ch: AssociationHandle, s: StreamId) -> RecvStream<'_> {
-        self.server_conn_mut(ch).recv_stream(s)
-    }
-
-    pub fn server_datagrams(&mut self, ch: AssociationHandle) -> Datagrams<'_> {
-        self.server_conn_mut(ch).datagrams()
-    }*/
 }
 
 impl Default for Pair {
@@ -392,55 +358,6 @@ pub fn subscribe() -> tracing::subscriber::DefaultGuard {
         .with_writer(|| TestWriter)
         .finish();
     tracing::subscriber::set_default(sub)
-}
-
-#[test]
-fn test_assoc_reliable_simple() -> Result<()> {
-    let _guard = subscribe();
-
-    const SI: u16 = 1;
-    const MSG: Bytes = Bytes::from_static(b"ABC");
-
-    let (mut pair, client_ch, server_ch) = create_new_association_pair(AckMode::NoDelay, 0)?;
-
-    establish_session_pair(&mut pair, client_ch, server_ch, SI)?;
-
-    /*
-    {
-        let a = a0.association_internal.lock().await;
-        assert_eq!(0, a.buffered_amount(), "incorrect bufferedAmount");
-    }
-
-    let n = s0
-        .write_sctp(&MSG, PayloadProtocolIdentifier::Binary)
-        .await?;
-    assert_eq!(MSG.len(), n, "unexpected length of received data");
-    {
-        let a = a0.association_internal.lock().await;
-        assert_eq!(MSG.len(), a.buffered_amount(), "incorrect bufferedAmount");
-    }
-
-    pair.drive();
-
-    let mut buf = vec![0u8; 32];
-    let (n, ppi) = s1.read_sctp(&mut buf).await?;
-    assert_eq!(n, MSG.len(), "unexpected length of received data");
-    assert_eq!(ppi, PayloadProtocolIdentifier::Binary, "unexpected ppi");
-
-    {
-        let q = s0.reassembly_queue.lock().await;
-        assert!(!q.is_readable(), "should no longer be readable");
-    }
-
-    {
-        let a = a0.association_internal.lock().await;
-        assert_eq!(0, a.buffered_amount(), "incorrect bufferedAmount");
-    }
-
-    close_association_pair(&br, a0, a1).await;
-     */
-
-    Ok(())
 }
 
 fn create_new_association_pair(
@@ -476,10 +393,9 @@ fn establish_session_pair(
         }
     }
     pair.drive();
-    /*
 
     let mut buf = vec![0u8; 1024];
-    let chunks = s1.read_sctp()?.unwrap();
+    let chunks = pair.server_stream(server_ch, si)?.read_sctp()?.unwrap();
     let n = chunks.read(&mut buf)?;
 
     if n != hello_msg.len() {
@@ -493,15 +409,12 @@ fn establish_session_pair(
     if &buf[..n] != &hello_msg {
         return Err(Error::Other("received data mismatch".to_owned()).into());
     }
-
     pair.drive();
-
-    Ok((s0, s1))*/
 
     Ok(())
 }
 /*
-async fn close_association_pair(br: &Arc<Bridge>, client: Association, server: Association) {
+fn close_association_pair(br: &Arc<Bridge>, client: Association, server: Association) {
     let (handshake0ch_tx, mut handshake0ch_rx) = mpsc::channel(1);
     let (handshake1ch_tx, mut handshake1ch_rx) = mpsc::channel(1);
     let (closed_tx, mut closed_rx0) = broadcast::channel::<()>(1);
@@ -548,31 +461,60 @@ async fn close_association_pair(br: &Arc<Bridge>, client: Association, server: A
 
     drop(closed_tx);
 }
-
-async fn flush_buffers(br: &Arc<Bridge>, client: &Association, server: &Association) {
-    loop {
-        loop {
-            let n = br.tick().await;
-            if n == 0 {
-                break;
-            }
-        }
-
-        {
-            let (a0, a1) = (
-                client.association_internal.lock().await,
-                server.association_internal.lock().await,
-            );
-            if a0.buffered_amount() == 0 && a1.buffered_amount() == 0 {
-                break;
-            }
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-}
-
 */
-//use std::io::Write;
+
+#[test]
+fn test_assoc_reliable_simple() -> Result<()> {
+    //let _guard = subscribe();
+
+    const SI: u16 = 1;
+    const MSG: Bytes = Bytes::from_static(b"ABC");
+
+    let (mut pair, client_ch, server_ch) = create_new_association_pair(AckMode::NoDelay, 0)?;
+
+    establish_session_pair(&mut pair, client_ch, server_ch, SI)?;
+
+    {
+        let a = pair.client_conn_mut(client_ch);
+        assert_eq!(0, a.buffered_amount(), "incorrect bufferedAmount");
+    }
+
+    let n = pair
+        .client_stream(client_ch, SI)?
+        .write_sctp(&MSG, PayloadProtocolIdentifier::Binary)?;
+    assert_eq!(MSG.len(), n, "unexpected length of received data");
+    {
+        let a = pair.client_conn_mut(client_ch);
+        assert_eq!(MSG.len(), a.buffered_amount(), "incorrect bufferedAmount");
+    }
+
+    pair.drive();
+
+    let chunks = pair.server_stream(server_ch, SI)?.read_sctp()?.unwrap();
+    let (n, ppi) = (chunks.len(), chunks.ppi);
+    assert_eq!(n, MSG.len(), "unexpected length of received data");
+    assert_eq!(ppi, PayloadProtocolIdentifier::Binary, "unexpected ppi");
+
+    {
+        //let q = s0.reassembly_queue.lock().await;
+        let q = &pair
+            .client_conn_mut(client_ch)
+            .streams
+            .get(&SI)
+            .unwrap()
+            .reassembly_queue;
+        assert!(!q.is_readable(), "should no longer be readable");
+    }
+
+    {
+        let a = pair.client_conn_mut(client_ch);
+        assert_eq!(0, a.buffered_amount(), "incorrect bufferedAmount");
+    }
+
+    //close_association_pair(&br, a0, a1).await;
+
+    Ok(())
+}
 
 /*
 //use std::io::Write;

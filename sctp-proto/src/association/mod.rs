@@ -2599,7 +2599,7 @@ impl Association {
 
     /// buffered_amount returns total amount (in bytes) of currently buffered user data.
     /// This is used only by testing.
-    fn buffered_amount(&self) -> usize {
+    pub(crate) fn buffered_amount(&self) -> usize {
         self.pending_queue.get_num_bytes() + self.inflight_queue.get_num_bytes()
     }
 
