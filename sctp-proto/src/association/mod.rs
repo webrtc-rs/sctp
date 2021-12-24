@@ -167,7 +167,7 @@ pub struct Association {
     advanced_peer_tsn_ack_point: u32,
     use_forward_tsn: bool,
 
-    rto_mgr: RtoManager,
+    pub(crate) rto_mgr: RtoManager,
     timers: TimerTable,
 
     // Congestion control parameters

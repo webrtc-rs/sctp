@@ -765,85 +765,72 @@ fn test_assoc_reliable_unordered_ordered() -> Result<()> {
     Ok(())
 }
 
-/*
-
 #[test]
 fn test_assoc_reliable_retransmission() -> Result<()> {
-    /*env_logger::Builder::new()
-    .format(|buf, record| {
-        writeln!(
-            buf,
-            "{}:{} [{}] {} - {}",
-            record.file().unwrap_or("unknown"),
-            record.line().unwrap_or(0),
-            record.level(),
-            chrono::Local::now().format("%H:%M:%S.%6f"),
-            record.args()
-        )
-    })
-    .filter(None, log::LevelFilter::Trace)
-    .init();*/
+    //let _guard = subscribe();
 
     let si: u16 = 6;
-    const msg1: Bytes = Bytes::from_static(b"ABC");
-    const msg2: Bytes = Bytes::from_static(b"DEFG");
+    let msg1: Bytes = Bytes::from_static(b"ABC");
+    let msg2: Bytes = Bytes::from_static(b"DEFG");
 
-    let (br, ca, cb) = Bridge::new(0, None, None);
+    let (mut pair, client_ch, server_ch) = create_association_pair(AckMode::NoDelay, 0)?;
 
-    let (a0, mut a1) =
-        create_new_association_pair(&br, Arc::new(ca), Arc::new(cb), AckMode::NoDelay, 0).await?;
     {
-        let mut a = a0.association_internal.lock().await;
+        let a = pair.client_conn_mut(client_ch);
         a.rto_mgr.set_rto(100, true);
     }
 
-    let (s0, s1) = establish_session_pair(&br, &a0, &mut a1, si).await?;
+    establish_session_pair(&mut pair, client_ch, server_ch, si)?;
 
-    let n = s0
-        .write_sctp(&msg1, PayloadProtocolIdentifier::Binary)
-        .await?;
+    let n = pair
+        .client_stream(client_ch, si)?
+        .write_sctp(&msg1, PayloadProtocolIdentifier::Binary)?;
     assert_eq!(msg1.len(), n, "unexpected length of received data");
+    pair.drive_client(); // send data to server
+    pair.server.inbound.clear(); // Lose it
+    debug!("dropping packet");
 
-    let n = s0
-        .write_sctp(&msg2, PayloadProtocolIdentifier::Binary)
-        .await?;
+    let n = pair
+        .client_stream(client_ch, si)?
+        .write_sctp(&msg2, PayloadProtocolIdentifier::Binary)?;
     assert_eq!(msg2.len(), n, "unexpected length of received data");
 
-    tokio::time::sleep(Duration::from_millis(10)).await;
-    log::debug!("dropping packet");
-    br.drop_offset(0, 0, 1).await; // drop the first packet (second one should be sacked)
-
-    // process packets for 200 msec
-    for _ in 0..20 {
-        br.tick().await;
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    pair.drive();
 
     let mut buf = vec![0u8; 32];
 
-    let (n, ppi) = s1.read_sctp(&mut buf).await?;
+    let chunks = pair.server_stream(server_ch, si)?.read_sctp()?.unwrap();
+    let (n, ppi) = (chunks.len(), chunks.ppi);
+    chunks.read(&mut buf)?;
     assert_eq!(n, msg1.len(), "unexpected length of received data");
     assert_eq!(&buf[..n], &msg1, "unexpected length of received data");
     assert_eq!(ppi, PayloadProtocolIdentifier::Binary, "unexpected ppi");
 
-    let (n, ppi) = s1.read_sctp(&mut buf).await?;
+    let chunks = pair.server_stream(server_ch, si)?.read_sctp()?.unwrap();
+    let (n, ppi) = (chunks.len(), chunks.ppi);
+    chunks.read(&mut buf)?;
     assert_eq!(n, msg2.len(), "unexpected length of received data");
     assert_eq!(&buf[..n], &msg2, "unexpected length of received data");
     assert_eq!(ppi, PayloadProtocolIdentifier::Binary, "unexpected ppi");
 
-    br.process().await;
+    pair.drive();
 
     {
-        let q = s0.reassembly_queue.lock().await;
+        let q = &pair
+            .client_conn_mut(client_ch)
+            .streams
+            .get(&si)
+            .unwrap()
+            .reassembly_queue;
         assert!(!q.is_readable(), "should no longer be readable");
     }
 
-    close_association_pair(&br, a0, a1).await;
+    close_association_pair(&mut pair, client_ch, server_ch, si);
 
     Ok(())
 }
 
-//use std::io::Write;
+/*
 
 #[test]
 fn test_assoc_reliable_short_buffer() -> Result<()> {
