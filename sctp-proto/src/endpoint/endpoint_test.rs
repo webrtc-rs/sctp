@@ -1219,24 +1219,9 @@ fn test_assoc_unreliable_rexmit_unordered_fragment() -> Result<()> {
     Ok(())
 }
 
-/*
-
 #[test]
 fn test_assoc_unreliable_rexmit_timed_ordered() -> Result<()> {
-    /*env_logger::Builder::new()
-    .format(|buf, record| {
-        writeln!(
-            buf,
-            "{}:{} [{}] {} - {}",
-            record.file().unwrap_or("unknown"),
-            record.line().unwrap_or(0),
-            record.level(),
-            chrono::Local::now().format("%H:%M:%S.%6f"),
-            record.args()
-        )
-    })
-    .filter(None, log::LevelFilter::Trace)
-    .init();*/
+    //let _guard = subscribe();
 
     let si: u16 = 3;
     let mut sbuf = vec![0u8; 1000];
@@ -1244,45 +1229,44 @@ fn test_assoc_unreliable_rexmit_timed_ordered() -> Result<()> {
         sbuf[i] = (i & 0xff) as u8;
     }
 
-    let (br, ca, cb) = Bridge::new(0, None, None);
+    let (mut pair, client_ch, server_ch) = create_association_pair(AckMode::NoDelay, 0)?;
 
-    let (a0, mut a1) =
-        create_new_association_pair(&br, Arc::new(ca), Arc::new(cb), AckMode::NoDelay, 0).await?;
-
-    let (s0, s1) = establish_session_pair(&br, &a0, &mut a1, si).await?;
+    establish_session_pair(&mut pair, client_ch, server_ch, si)?;
 
     // When we set the reliability value to 0 [times], then it will cause
     // the chunk to be abandoned immediately after the first transmission.
-    s0.set_reliability_params(false, ReliabilityType::Timed, 0);
-    s1.set_reliability_params(false, ReliabilityType::Timed, 0); // doesn't matter
+    pair.client_stream(client_ch, si)?
+        .set_reliability_params(false, ReliabilityType::Timed, 0);
+    pair.server_stream(server_ch, si)?
+        .set_reliability_params(false, ReliabilityType::Timed, 0); // doesn't matter
 
-    br.drop_next_nwrites(0, 1).await; // drop the first packet (second one should be sacked)
+    //br.drop_next_nwrites(0, 1).await; // drop the first packet (second one should be sacked)
 
     sbuf[0..4].copy_from_slice(&0u32.to_be_bytes());
-    let n = s0
-        .write_sctp(
-            &Bytes::from(sbuf.clone()),
-            PayloadProtocolIdentifier::Binary,
-        )
-        .await?;
+    let n = pair.client_stream(client_ch, si)?.write_sctp(
+        &Bytes::from(sbuf.clone()),
+        PayloadProtocolIdentifier::Binary,
+    )?;
     assert_eq!(sbuf.len(), n, "unexpected length of received data");
+    pair.client.drive(pair.time, pair.server.addr);
+    pair.client.outbound.clear();
 
     sbuf[0..4].copy_from_slice(&1u32.to_be_bytes());
-    let n = s0
-        .write_sctp(
-            &Bytes::from(sbuf.clone()),
-            PayloadProtocolIdentifier::Binary,
-        )
-        .await?;
+    let n = pair.client_stream(client_ch, si)?.write_sctp(
+        &Bytes::from(sbuf.clone()),
+        PayloadProtocolIdentifier::Binary,
+    )?;
     assert_eq!(sbuf.len(), n, "unexpected length of received data");
 
     //log::debug!("flush_buffers");
-    flush_buffers(&br, &a0, &a1).await;
+    pair.drive();
 
     let mut buf = vec![0u8; 2000];
 
     //log::debug!("read_sctp");
-    let (n, ppi) = s1.read_sctp(&mut buf).await?;
+    let chunks = pair.server_stream(server_ch, si)?.read_sctp()?.unwrap();
+    let (n, ppi) = (chunks.len(), chunks.ppi);
+    chunks.read(&mut buf)?;
     assert_eq!(n, sbuf.len(), "unexpected length of received data");
     assert_eq!(ppi, PayloadProtocolIdentifier::Binary, "unexpected ppi");
     assert_eq!(
@@ -1292,36 +1276,26 @@ fn test_assoc_unreliable_rexmit_timed_ordered() -> Result<()> {
     );
 
     //log::debug!("process");
-    br.process().await;
+    pair.drive();
 
     {
-        let q = s0.reassembly_queue.lock().await;
+        let q = &pair
+            .client_conn_mut(client_ch)
+            .streams
+            .get(&si)
+            .unwrap()
+            .reassembly_queue;
         assert!(!q.is_readable(), "should no longer be readable");
     }
 
-    close_association_pair(&br, a0, a1).await;
+    close_association_pair(&mut pair, client_ch, server_ch, si);
 
     Ok(())
 }
 
-//use std::io::Write;
-
 #[test]
 fn test_assoc_unreliable_rexmit_timed_unordered() -> Result<()> {
-    /*env_logger::Builder::new()
-    .format(|buf, record| {
-        writeln!(
-            buf,
-            "{}:{} [{}] {} - {}",
-            record.file().unwrap_or("unknown"),
-            record.line().unwrap_or(0),
-            record.level(),
-            chrono::Local::now().format("%H:%M:%S.%6f"),
-            record.args()
-        )
-    })
-    .filter(None, log::LevelFilter::Trace)
-    .init();*/
+    //let _guard = subscribe();
 
     let si: u16 = 3;
     let mut sbuf = vec![0u8; 1000];
@@ -1329,45 +1303,44 @@ fn test_assoc_unreliable_rexmit_timed_unordered() -> Result<()> {
         sbuf[i] = (i & 0xff) as u8;
     }
 
-    let (br, ca, cb) = Bridge::new(0, None, None);
+    let (mut pair, client_ch, server_ch) = create_association_pair(AckMode::NoDelay, 0)?;
 
-    let (a0, mut a1) =
-        create_new_association_pair(&br, Arc::new(ca), Arc::new(cb), AckMode::NoDelay, 0).await?;
-
-    let (s0, s1) = establish_session_pair(&br, &a0, &mut a1, si).await?;
+    establish_session_pair(&mut pair, client_ch, server_ch, si)?;
 
     // When we set the reliability value to 0 [times], then it will cause
     // the chunk to be abandoned immediately after the first transmission.
-    s0.set_reliability_params(true, ReliabilityType::Timed, 0);
-    s1.set_reliability_params(true, ReliabilityType::Timed, 0); // doesn't matter
+    pair.client_stream(client_ch, si)?
+        .set_reliability_params(true, ReliabilityType::Timed, 0);
+    pair.server_stream(server_ch, si)?
+        .set_reliability_params(true, ReliabilityType::Timed, 0); // doesn't matter
 
-    br.drop_next_nwrites(0, 1).await; // drop the first packet (second one should be sacked)
+    //br.drop_next_nwrites(0, 1).await; // drop the first packet (second one should be sacked)
 
     sbuf[0..4].copy_from_slice(&0u32.to_be_bytes());
-    let n = s0
-        .write_sctp(
-            &Bytes::from(sbuf.clone()),
-            PayloadProtocolIdentifier::Binary,
-        )
-        .await?;
+    let n = pair.client_stream(client_ch, si)?.write_sctp(
+        &Bytes::from(sbuf.clone()),
+        PayloadProtocolIdentifier::Binary,
+    )?;
     assert_eq!(sbuf.len(), n, "unexpected length of received data");
+    pair.client.drive(pair.time, pair.server.addr);
+    pair.client.outbound.clear();
 
     sbuf[0..4].copy_from_slice(&1u32.to_be_bytes());
-    let n = s0
-        .write_sctp(
-            &Bytes::from(sbuf.clone()),
-            PayloadProtocolIdentifier::Binary,
-        )
-        .await?;
+    let n = pair.client_stream(client_ch, si)?.write_sctp(
+        &Bytes::from(sbuf.clone()),
+        PayloadProtocolIdentifier::Binary,
+    )?;
     assert_eq!(sbuf.len(), n, "unexpected length of received data");
 
     //log::debug!("flush_buffers");
-    flush_buffers(&br, &a0, &a1).await;
+    pair.drive();
 
     let mut buf = vec![0u8; 2000];
 
     //log::debug!("read_sctp");
-    let (n, ppi) = s1.read_sctp(&mut buf).await?;
+    let chunks = pair.server_stream(server_ch, si)?.read_sctp()?.unwrap();
+    let (n, ppi) = (chunks.len(), chunks.ppi);
+    chunks.read(&mut buf)?;
     assert_eq!(n, sbuf.len(), "unexpected length of received data");
     assert_eq!(ppi, PayloadProtocolIdentifier::Binary, "unexpected ppi");
     assert_eq!(
@@ -1377,10 +1350,15 @@ fn test_assoc_unreliable_rexmit_timed_unordered() -> Result<()> {
     );
 
     //log::debug!("process");
-    br.process().await;
+    pair.drive();
 
     {
-        let q = s0.reassembly_queue.lock().await;
+        let q = &pair
+            .client_conn_mut(client_ch)
+            .streams
+            .get(&si)
+            .unwrap()
+            .reassembly_queue;
         assert!(!q.is_readable(), "should no longer be readable");
         assert_eq!(
             0,
@@ -1394,7 +1372,7 @@ fn test_assoc_unreliable_rexmit_timed_unordered() -> Result<()> {
         );
     }
 
-    close_association_pair(&br, a0, a1).await;
+    close_association_pair(&mut pair, client_ch, server_ch, si);
 
     Ok(())
 }
@@ -1403,8 +1381,7 @@ fn test_assoc_unreliable_rexmit_timed_unordered() -> Result<()> {
 //TODO: TestAssocT1CookieTimer
 //TODO: TestAssocT3RtxTimer
 
-//use std::io::Write;
-
+/*
 // 1) Send 4 packets. drop the first one.
 // 2) Last 3 packet will be received, which triggers fast-retransmission
 // 3) The first one is retransmitted, which makes s1 readable
