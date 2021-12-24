@@ -830,53 +830,36 @@ fn test_assoc_reliable_retransmission() -> Result<()> {
     Ok(())
 }
 
-/*
-
 #[test]
 fn test_assoc_reliable_short_buffer() -> Result<()> {
-    /*env_logger::Builder::new()
-    .format(|buf, record| {
-        writeln!(
-            buf,
-            "{}:{} [{}] {} - {}",
-            record.file().unwrap_or("unknown"),
-            record.line().unwrap_or(0),
-            record.level(),
-            chrono::Local::now().format("%H:%M:%S.%6f"),
-            record.args()
-        )
-    })
-    .filter(None, log::LevelFilter::Trace)
-    .init();*/
+    //let _guard = subscribe();
 
     let si: u16 = 1;
-    const MSG: Bytes = Bytes::from_static(b"Hello");
+    let msg: Bytes = Bytes::from_static(b"Hello");
 
-    let (br, ca, cb) = Bridge::new(0, None, None);
+    let (mut pair, client_ch, server_ch) = create_association_pair(AckMode::NoDelay, 0)?;
 
-    let (a0, mut a1) =
-        create_new_association_pair(&br, Arc::new(ca), Arc::new(cb), AckMode::NoDelay, 0).await?;
-
-    let (s0, s1) = establish_session_pair(&br, &a0, &mut a1, si).await?;
+    establish_session_pair(&mut pair, client_ch, server_ch, si)?;
 
     {
-        let a = a0.association_internal.lock().await;
+        let a = pair.client_conn_mut(client_ch);
         assert_eq!(0, a.buffered_amount(), "incorrect bufferedAmount");
     }
 
-    let n = s0
-        .write_sctp(&MSG, PayloadProtocolIdentifier::Binary)
-        .await?;
-    assert_eq!(MSG.len(), n, "unexpected length of received data");
+    let n = pair
+        .client_stream(client_ch, si)?
+        .write_sctp(&msg, PayloadProtocolIdentifier::Binary)?;
+    assert_eq!(msg.len(), n, "unexpected length of received data");
     {
-        let a = a0.association_internal.lock().await;
-        assert_eq!(MSG.len(), a.buffered_amount(), "incorrect bufferedAmount");
+        let a = pair.client_conn_mut(client_ch);
+        assert_eq!(msg.len(), a.buffered_amount(), "incorrect bufferedAmount");
     }
 
-    flush_buffers(&br, &a0, &a1).await;
+    pair.drive();
 
     let mut buf = vec![0u8; 3];
-    let result = s1.read_sctp(&mut buf).await;
+    let chunks = pair.server_stream(server_ch, si)?.read_sctp()?.unwrap();
+    let result = chunks.read(&mut buf);
     assert!(result.is_err(), "expected error to be io.ErrShortBuffer");
     if let Err(err) = result {
         assert_eq!(
@@ -887,21 +870,26 @@ fn test_assoc_reliable_short_buffer() -> Result<()> {
     }
 
     {
-        let q = s0.reassembly_queue.lock().await;
+        let q = &pair
+            .client_conn_mut(client_ch)
+            .streams
+            .get(&si)
+            .unwrap()
+            .reassembly_queue;
         assert!(!q.is_readable(), "should no longer be readable");
     }
 
     {
-        let a = a0.association_internal.lock().await;
+        let a = pair.client_conn_mut(client_ch);
         assert_eq!(0, a.buffered_amount(), "incorrect bufferedAmount");
     }
 
-    close_association_pair(&br, a0, a1).await;
+    close_association_pair(&mut pair, client_ch, server_ch, si);
 
     Ok(())
 }
 
-//use std::io::Write;
+/*
 
 #[test]
 fn test_assoc_unreliable_rexmit_ordered_no_fragment() -> Result<()> {
