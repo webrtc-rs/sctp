@@ -633,27 +633,11 @@ fn test_assoc_reliable_ordered_fragmented_then_defragmented() -> Result<()> {
     Ok(())
 }
 
-/*
-
-
 #[test]
 fn test_assoc_reliable_unordered_fragmented_then_defragmented() -> Result<()> {
-    /*env_logger::Builder::new()
-    .format(|buf, record| {
-        writeln!(
-            buf,
-            "{}:{} [{}] {} - {}",
-            record.file().unwrap_or("unknown"),
-            record.line().unwrap_or(0),
-            record.level(),
-            chrono::Local::now().format("%H:%M:%S.%6f"),
-            record.args()
-        )
-    })
-    .filter(None, log::LevelFilter::Trace)
-    .init();*/
+    //let _guard = subscribe();
 
-    const si: u16 = 4;
+    let si: u16 = 4;
     let mut sbuf = vec![0u8; 1000];
     for i in 0..sbuf.len() {
         sbuf[i] = (i & 0xff) as u8;
@@ -663,45 +647,49 @@ fn test_assoc_reliable_unordered_fragmented_then_defragmented() -> Result<()> {
         sbufl[i] = (i & 0xff) as u8;
     }
 
-    let (br, ca, cb) = Bridge::new(0, None, None);
+    let (mut pair, client_ch, server_ch) = create_association_pair(AckMode::NoDelay, 0)?;
 
-    let (a0, mut a1) =
-        create_new_association_pair(&br, Arc::new(ca), Arc::new(cb), AckMode::NoDelay, 0).await?;
+    establish_session_pair(&mut pair, client_ch, server_ch, si)?;
 
-    let (s0, s1) = establish_session_pair(&br, &a0, &mut a1, si).await?;
+    pair.client_stream(client_ch, si)?
+        .set_reliability_params(true, ReliabilityType::Reliable, 0);
+    pair.server_stream(server_ch, si)?
+        .set_reliability_params(true, ReliabilityType::Reliable, 0);
 
-    s0.set_reliability_params(true, ReliabilityType::Reliable, 0);
-    s1.set_reliability_params(true, ReliabilityType::Reliable, 0);
-
-    let n = s0
-        .write_sctp(
-            &Bytes::from(sbufl.clone()),
-            PayloadProtocolIdentifier::Binary,
-        )
-        .await?;
+    let n = pair.client_stream(client_ch, si)?.write_sctp(
+        &Bytes::from(sbufl.clone()),
+        PayloadProtocolIdentifier::Binary,
+    )?;
     assert_eq!(sbufl.len(), n, "unexpected length of received data");
 
-    flush_buffers(&br, &a0, &a1).await;
+    pair.drive();
 
     let mut rbuf = vec![0u8; 2000];
-    let (n, ppi) = s1.read_sctp(&mut rbuf).await?;
+    let chunks = pair.server_stream(server_ch, si)?.read_sctp()?.unwrap();
+    let (n, ppi) = (chunks.len(), chunks.ppi);
+    chunks.read(&mut rbuf)?;
     assert_eq!(n, sbufl.len(), "unexpected length of received data");
     assert_eq!(&rbuf[..n], &sbufl, "unexpected received data");
     assert_eq!(ppi, PayloadProtocolIdentifier::Binary, "unexpected ppi");
 
-    br.process().await;
+    pair.drive();
 
     {
-        let q = s0.reassembly_queue.lock().await;
+        let q = &pair
+            .client_conn_mut(client_ch)
+            .streams
+            .get(&si)
+            .unwrap()
+            .reassembly_queue;
         assert!(!q.is_readable(), "should no longer be readable");
     }
 
-    close_association_pair(&br, a0, a1).await;
+    close_association_pair(&mut pair, client_ch, server_ch, si);
 
     Ok(())
 }
 
-//use std::io::Write;
+/*
 
 #[test]
 fn test_assoc_reliable_unordered_ordered() -> Result<()> {
@@ -720,7 +708,7 @@ fn test_assoc_reliable_unordered_ordered() -> Result<()> {
     .filter(None, log::LevelFilter::Trace)
     .init();*/
 
-    const si: u16 = 5;
+    let si: u16 = 5;
     let mut sbuf = vec![0u8; 1000];
     for i in 0..sbuf.len() {
         sbuf[i] = (i & 0xff) as u8;
@@ -813,7 +801,7 @@ fn test_assoc_reliable_retransmission() -> Result<()> {
     .filter(None, log::LevelFilter::Trace)
     .init();*/
 
-    const si: u16 = 6;
+    let si: u16 = 6;
     const msg1: Bytes = Bytes::from_static(b"ABC");
     const msg2: Bytes = Bytes::from_static(b"DEFG");
 
@@ -891,7 +879,7 @@ fn test_assoc_reliable_short_buffer() -> Result<()> {
     .filter(None, log::LevelFilter::Trace)
     .init();*/
 
-    const si: u16 = 1;
+    let si: u16 = 1;
     const MSG: Bytes = Bytes::from_static(b"Hello");
 
     let (br, ca, cb) = Bridge::new(0, None, None);
@@ -962,7 +950,7 @@ fn test_assoc_unreliable_rexmit_ordered_no_fragment() -> Result<()> {
     .filter(None, log::LevelFilter::Trace)
     .init();*/
 
-    const si: u16 = 1;
+    let si: u16 = 1;
     let mut sbuf = vec![0u8; 1000];
     for i in 0..sbuf.len() {
         sbuf[i] = (i & 0xff) as u8;
@@ -1047,7 +1035,7 @@ fn test_assoc_unreliable_rexmit_ordered_fragment() -> Result<()> {
     .filter(None, log::LevelFilter::Trace)
     .init();*/
 
-    const si: u16 = 1;
+    let si: u16 = 1;
     let mut sbuf = vec![0u8; 2000];
     for i in 0..sbuf.len() {
         sbuf[i] = (i & 0xff) as u8;
@@ -1137,7 +1125,7 @@ fn test_assoc_unreliable_rexmit_unordered_no_fragment() -> Result<()> {
     .filter(None, log::LevelFilter::Trace)
     .init();*/
 
-    const si: u16 = 2;
+    let si: u16 = 2;
     let mut sbuf = vec![0u8; 1000];
     for i in 0..sbuf.len() {
         sbuf[i] = (i & 0xff) as u8;
@@ -1222,7 +1210,7 @@ fn test_assoc_unreliable_rexmit_unordered_fragment() -> Result<()> {
     .filter(None, log::LevelFilter::Trace)
     .init();*/
 
-    const si: u16 = 1;
+    let si: u16 = 1;
     let mut sbuf = vec![0u8; 2000];
     for i in 0..sbuf.len() {
         sbuf[i] = (i & 0xff) as u8;
@@ -1317,7 +1305,7 @@ fn test_assoc_unreliable_rexmit_timed_ordered() -> Result<()> {
     .filter(None, log::LevelFilter::Trace)
     .init();*/
 
-    const si: u16 = 3;
+    let si: u16 = 3;
     let mut sbuf = vec![0u8; 1000];
     for i in 0..sbuf.len() {
         sbuf[i] = (i & 0xff) as u8;
@@ -1402,7 +1390,7 @@ fn test_assoc_unreliable_rexmit_timed_unordered() -> Result<()> {
     .filter(None, log::LevelFilter::Trace)
     .init();*/
 
-    const si: u16 = 3;
+    let si: u16 = 3;
     let mut sbuf = vec![0u8; 1000];
     for i in 0..sbuf.len() {
         sbuf[i] = (i & 0xff) as u8;
@@ -1505,7 +1493,7 @@ fn test_assoc_congestion_control_fast_retransmission() -> Result<()> {
     .filter(None, log::LevelFilter::Trace)
     .init();*/
 
-    const si: u16 = 6;
+    let si: u16 = 6;
     let mut sbuf = vec![0u8; 1000];
     for i in 0..sbuf.len() {
         sbuf[i] = (i & 0xff) as u8;
@@ -1597,7 +1585,7 @@ fn test_assoc_congestion_control_congestion_avoidance() -> Result<()> {
     .init();*/
 
     const MAX_RECEIVE_BUFFER_SIZE: u32 = 64 * 1024;
-    const si: u16 = 6;
+    let si: u16 = 6;
     const N_PACKETS_TO_SEND: u32 = 2000;
 
     let mut sbuf = vec![0u8; 1000];
@@ -1739,7 +1727,7 @@ fn test_assoc_congestion_control_slow_reader() -> Result<()> {
     .init();*/
 
     const MAX_RECEIVE_BUFFER_SIZE: u32 = 64 * 1024;
-    const si: u16 = 6;
+    let si: u16 = 6;
     const N_PACKETS_TO_SEND: u32 = 130;
 
     let mut sbuf = vec![0u8; 1000];
@@ -1869,7 +1857,7 @@ fn test_assoc_delayed_ack() -> Result<()> {
         .filter(None, log::LevelFilter::Trace)
         .init();
 
-    const si: u16 = 6;
+    let si: u16 = 6;
     let mut sbuf = vec![0u8; 1000];
     let mut rbuf = vec![0u8; 1500];
     for i in 0..sbuf.len() {
@@ -1985,7 +1973,7 @@ fn test_assoc_reset_close_one_way() -> Result<()> {
     .filter(None, log::LevelFilter::Trace)
     .init();*/
 
-    const si: u16 = 1;
+    let si: u16 = 1;
     const MSG: Bytes = Bytes::from_static(b"ABC");
 
     let (br, ca, cb) = Bridge::new(0, None, None);
@@ -2080,7 +2068,7 @@ fn test_assoc_reset_close_both_ways() -> Result<()> {
     .filter(None, log::LevelFilter::Trace)
     .init();*/
 
-    const si: u16 = 1;
+    let si: u16 = 1;
     const MSG: Bytes = Bytes::from_static(b"ABC");
 
     let (br, ca, cb) = Bridge::new(0, None, None);
@@ -2223,7 +2211,7 @@ fn test_assoc_abort() -> Result<()> {
     .filter(None, log::LevelFilter::Trace)
     .init();*/
 
-    const si: u16 = 1;
+    let si: u16 = 1;
     let (br, ca, cb) = Bridge::new(0, None, None);
 
     let (a0, mut a1) =
