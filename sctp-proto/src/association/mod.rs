@@ -179,7 +179,7 @@ pub struct Association {
     // slow start threshold
     ssthresh: u32,
     partial_bytes_acked: u32,
-    in_fast_recovery: bool,
+    pub(crate) in_fast_recovery: bool,
     fast_recover_exit_point: u32,
 
     // Chunks stored for retransmission
@@ -195,7 +195,7 @@ pub struct Association {
     delayed_ack_triggered: bool,
     immediate_ack_triggered: bool,
 
-    stats: AssociationStats,
+    pub(crate) stats: AssociationStats,
     ack_state: AckState,
 
     // for testing
@@ -443,11 +443,11 @@ impl Association {
             if !expired {
                 continue;
             }
+            self.timers.set(timer, None);
             trace!(timer = ?timer, "timeout");
 
             if timer == Timer::Ack {
                 self.on_ack_timeout();
-                self.timers.start(timer, now, ACK_INTERVAL);
             } else if failure {
                 self.on_retransmission_failure(timer);
             } else {

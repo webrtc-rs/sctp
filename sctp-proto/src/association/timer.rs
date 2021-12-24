@@ -50,6 +50,10 @@ impl TimerTable {
         }
     }
 
+    pub fn set(&mut self, timer: Timer, time: Option<Instant>) {
+        self.data[timer as usize] = time;
+    }
+
     pub fn get(&self, timer: Timer) -> Option<Instant> {
         self.data[timer as usize]
     }
