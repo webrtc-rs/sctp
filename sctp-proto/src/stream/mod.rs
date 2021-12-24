@@ -171,6 +171,25 @@ impl<'a> Stream<'a> {
     }
 }
 
+impl<'a> std::ops::Deref for Stream<'a> {
+    type Target = StreamState;
+    fn deref(&self) -> &StreamState {
+        self.association
+            .streams
+            .get(&self.stream_identifier)
+            .unwrap()
+    }
+}
+
+impl<'a> std::ops::DerefMut for Stream<'a> {
+    fn deref_mut(&mut self) -> &mut StreamState {
+        self.association
+            .streams
+            .get_mut(&self.stream_identifier)
+            .unwrap()
+    }
+}
+
 /// Stream represents an SCTP stream
 #[derive(Default, Debug)]
 pub struct StreamState {
