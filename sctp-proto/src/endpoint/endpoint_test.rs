@@ -389,7 +389,7 @@ fn establish_session_pair(
     {
         let s1 = pair.server_conn_mut(server_ch).accept_stream().unwrap();
         if si != s1.stream_identifier {
-            return Err(Error::Other("SI should match".to_owned()).into());
+            return Err(Error::Other("si should match".to_owned()).into());
         }
     }
     pair.drive();
@@ -493,27 +493,11 @@ fn test_assoc_reliable_simple() -> Result<()> {
     Ok(())
 }
 
-/*
-//use std::io::Write;
+#[test]
+fn test_assoc_reliable_ordered_reordered() -> Result<()> {
+    // let _guard = subscribe();
 
-#[tokio::test]
-async fn test_assoc_reliable_ordered_reordered() -> Result<()> {
-    /*env_logger::Builder::new()
-    .format(|buf, record| {
-        writeln!(
-            buf,
-            "{}:{} [{}] {} - {}",
-            record.file().unwrap_or("unknown"),
-            record.line().unwrap_or(0),
-            record.level(),
-            chrono::Local::now().format("%H:%M:%S.%6f"),
-            record.args()
-        )
-    })
-    .filter(None, log::LevelFilter::Trace)
-    .init();*/
-
-    const SI: u16 = 2;
+    let si: u16 = 2;
     let mut sbuf = vec![0u8; 1000];
     for i in 0..sbuf.len() {
         sbuf[i] = (i & 0xff) as u8;
@@ -523,43 +507,40 @@ async fn test_assoc_reliable_ordered_reordered() -> Result<()> {
         sbufl[i] = (i & 0xff) as u8;
     }
 
-    let (br, ca, cb) = Bridge::new(0, None, None);
+    let (mut pair, client_ch, server_ch) = create_association_pair(AckMode::NoDelay, 0)?;
 
-    let (a0, mut a1) =
-        create_new_association_pair(&br, Arc::new(ca), Arc::new(cb), AckMode::NoDelay, 0).await?;
-
-    let (s0, s1) = establish_session_pair(&br, &a0, &mut a1, SI).await?;
+    establish_session_pair(&mut pair, client_ch, server_ch, si)?;
 
     {
-        let a = a0.association_internal.lock().await;
+        let a = pair.client_conn_mut(client_ch);
         assert_eq!(0, a.buffered_amount(), "incorrect bufferedAmount");
     }
 
     sbuf[0..4].copy_from_slice(&0u32.to_be_bytes());
-    let n = s0
-        .write_sctp(
-            &Bytes::from(sbuf.clone()),
-            PayloadProtocolIdentifier::Binary,
-        )
-        .await?;
+    let n = pair.client_stream(client_ch, si)?.write_sctp(
+        &Bytes::from(sbuf.clone()),
+        PayloadProtocolIdentifier::Binary,
+    )?;
     assert_eq!(sbuf.len(), n, "unexpected length of received data");
+    pair.client.drive(pair.time, pair.server.addr);
+    pair.client.delay_outbound(); // Delay it
 
     sbuf[0..4].copy_from_slice(&1u32.to_be_bytes());
-    let n = s0
-        .write_sctp(
-            &Bytes::from(sbuf.clone()),
-            PayloadProtocolIdentifier::Binary,
-        )
-        .await?;
+    let n = pair.client_stream(client_ch, si)?.write_sctp(
+        &Bytes::from(sbuf.clone()),
+        PayloadProtocolIdentifier::Binary,
+    )?;
     assert_eq!(sbuf.len(), n, "unexpected length of received data");
+    pair.client.drive(pair.time, pair.server.addr);
+    pair.client.finish_delay(); // Reorder it
 
-    tokio::time::sleep(Duration::from_millis(10)).await;
-    br.reorder(0).await;
-    br.process().await;
+    pair.drive();
 
     let mut buf = vec![0u8; 2000];
 
-    let (n, ppi) = s1.read_sctp(&mut buf).await?;
+    let chunks = pair.server_stream(server_ch, si)?.read_sctp()?.unwrap();
+    let (n, ppi) = (chunks.len(), chunks.ppi);
+    chunks.read(&mut buf)?;
     assert_eq!(n, sbuf.len(), "unexpected length of received data");
     assert_eq!(ppi, PayloadProtocolIdentifier::Binary, "unexpected ppi");
     assert_eq!(
@@ -568,7 +549,9 @@ async fn test_assoc_reliable_ordered_reordered() -> Result<()> {
         "unexpected received data"
     );
 
-    let (n, ppi) = s1.read_sctp(&mut buf).await?;
+    let chunks = pair.server_stream(server_ch, si)?.read_sctp()?.unwrap();
+    let (n, ppi) = (chunks.len(), chunks.ppi);
+    chunks.read(&mut buf)?;
     assert_eq!(n, sbuf.len(), "unexpected length of received data");
     assert_eq!(ppi, PayloadProtocolIdentifier::Binary, "unexpected ppi");
     assert_eq!(
@@ -577,22 +560,27 @@ async fn test_assoc_reliable_ordered_reordered() -> Result<()> {
         "unexpected received data"
     );
 
-    br.process().await;
+    pair.drive();
 
     {
-        let q = s0.reassembly_queue.lock().await;
+        let q = &pair
+            .client_conn_mut(client_ch)
+            .streams
+            .get(&si)
+            .unwrap()
+            .reassembly_queue;
         assert!(!q.is_readable(), "should no longer be readable");
     }
 
-    close_association_pair(&br, a0, a1).await;
+    close_association_pair(&mut pair, client_ch, server_ch, si);
 
     Ok(())
 }
 
-//use std::io::Write;
+/*
 
-#[tokio::test]
-async fn test_assoc_reliable_ordered_fragmented_then_defragmented() -> Result<()> {
+#[test]
+fn test_assoc_reliable_ordered_fragmented_then_defragmented() -> Result<()> {
     /*env_logger::Builder::new()
     .format(|buf, record| {
         writeln!(
@@ -608,7 +596,7 @@ async fn test_assoc_reliable_ordered_fragmented_then_defragmented() -> Result<()
     .filter(None, log::LevelFilter::Trace)
     .init();*/
 
-    const SI: u16 = 3;
+    const si: u16 = 3;
     let mut sbuf = vec![0u8; 1000];
     for i in 0..sbuf.len() {
         sbuf[i] = (i & 0xff) as u8;
@@ -623,7 +611,7 @@ async fn test_assoc_reliable_ordered_fragmented_then_defragmented() -> Result<()
     let (a0, mut a1) =
         create_new_association_pair(&br, Arc::new(ca), Arc::new(cb), AckMode::NoDelay, 0).await?;
 
-    let (s0, s1) = establish_session_pair(&br, &a0, &mut a1, SI).await?;
+    let (s0, s1) = establish_session_pair(&br, &a0, &mut a1, si).await?;
 
     s0.set_reliability_params(false, ReliabilityType::Reliable, 0);
     s1.set_reliability_params(false, ReliabilityType::Reliable, 0);
@@ -658,8 +646,8 @@ async fn test_assoc_reliable_ordered_fragmented_then_defragmented() -> Result<()
 
 //use std::io::Write;
 
-#[tokio::test]
-async fn test_assoc_reliable_unordered_fragmented_then_defragmented() -> Result<()> {
+#[test]
+fn test_assoc_reliable_unordered_fragmented_then_defragmented() -> Result<()> {
     /*env_logger::Builder::new()
     .format(|buf, record| {
         writeln!(
@@ -675,7 +663,7 @@ async fn test_assoc_reliable_unordered_fragmented_then_defragmented() -> Result<
     .filter(None, log::LevelFilter::Trace)
     .init();*/
 
-    const SI: u16 = 4;
+    const si: u16 = 4;
     let mut sbuf = vec![0u8; 1000];
     for i in 0..sbuf.len() {
         sbuf[i] = (i & 0xff) as u8;
@@ -690,7 +678,7 @@ async fn test_assoc_reliable_unordered_fragmented_then_defragmented() -> Result<
     let (a0, mut a1) =
         create_new_association_pair(&br, Arc::new(ca), Arc::new(cb), AckMode::NoDelay, 0).await?;
 
-    let (s0, s1) = establish_session_pair(&br, &a0, &mut a1, SI).await?;
+    let (s0, s1) = establish_session_pair(&br, &a0, &mut a1, si).await?;
 
     s0.set_reliability_params(true, ReliabilityType::Reliable, 0);
     s1.set_reliability_params(true, ReliabilityType::Reliable, 0);
@@ -725,8 +713,8 @@ async fn test_assoc_reliable_unordered_fragmented_then_defragmented() -> Result<
 
 //use std::io::Write;
 
-#[tokio::test]
-async fn test_assoc_reliable_unordered_ordered() -> Result<()> {
+#[test]
+fn test_assoc_reliable_unordered_ordered() -> Result<()> {
     /*env_logger::Builder::new()
     .format(|buf, record| {
         writeln!(
@@ -742,7 +730,7 @@ async fn test_assoc_reliable_unordered_ordered() -> Result<()> {
     .filter(None, log::LevelFilter::Trace)
     .init();*/
 
-    const SI: u16 = 5;
+    const si: u16 = 5;
     let mut sbuf = vec![0u8; 1000];
     for i in 0..sbuf.len() {
         sbuf[i] = (i & 0xff) as u8;
@@ -757,7 +745,7 @@ async fn test_assoc_reliable_unordered_ordered() -> Result<()> {
     let (a0, mut a1) =
         create_new_association_pair(&br, Arc::new(ca), Arc::new(cb), AckMode::NoDelay, 0).await?;
 
-    let (s0, s1) = establish_session_pair(&br, &a0, &mut a1, SI).await?;
+    let (s0, s1) = establish_session_pair(&br, &a0, &mut a1, si).await?;
 
     s0.set_reliability_params(true, ReliabilityType::Reliable, 0);
     s1.set_reliability_params(true, ReliabilityType::Reliable, 0);
@@ -818,8 +806,8 @@ async fn test_assoc_reliable_unordered_ordered() -> Result<()> {
 
 //use std::io::Write;
 
-#[tokio::test]
-async fn test_assoc_reliable_retransmission() -> Result<()> {
+#[test]
+fn test_assoc_reliable_retransmission() -> Result<()> {
     /*env_logger::Builder::new()
     .format(|buf, record| {
         writeln!(
@@ -835,9 +823,9 @@ async fn test_assoc_reliable_retransmission() -> Result<()> {
     .filter(None, log::LevelFilter::Trace)
     .init();*/
 
-    const SI: u16 = 6;
-    const MSG1: Bytes = Bytes::from_static(b"ABC");
-    const MSG2: Bytes = Bytes::from_static(b"DEFG");
+    const si: u16 = 6;
+    const msg1: Bytes = Bytes::from_static(b"ABC");
+    const msg2: Bytes = Bytes::from_static(b"DEFG");
 
     let (br, ca, cb) = Bridge::new(0, None, None);
 
@@ -848,17 +836,17 @@ async fn test_assoc_reliable_retransmission() -> Result<()> {
         a.rto_mgr.set_rto(100, true);
     }
 
-    let (s0, s1) = establish_session_pair(&br, &a0, &mut a1, SI).await?;
+    let (s0, s1) = establish_session_pair(&br, &a0, &mut a1, si).await?;
 
     let n = s0
-        .write_sctp(&MSG1, PayloadProtocolIdentifier::Binary)
+        .write_sctp(&msg1, PayloadProtocolIdentifier::Binary)
         .await?;
-    assert_eq!(MSG1.len(), n, "unexpected length of received data");
+    assert_eq!(msg1.len(), n, "unexpected length of received data");
 
     let n = s0
-        .write_sctp(&MSG2, PayloadProtocolIdentifier::Binary)
+        .write_sctp(&msg2, PayloadProtocolIdentifier::Binary)
         .await?;
-    assert_eq!(MSG2.len(), n, "unexpected length of received data");
+    assert_eq!(msg2.len(), n, "unexpected length of received data");
 
     tokio::time::sleep(Duration::from_millis(10)).await;
     log::debug!("dropping packet");
@@ -873,13 +861,13 @@ async fn test_assoc_reliable_retransmission() -> Result<()> {
     let mut buf = vec![0u8; 32];
 
     let (n, ppi) = s1.read_sctp(&mut buf).await?;
-    assert_eq!(n, MSG1.len(), "unexpected length of received data");
-    assert_eq!(&buf[..n], &MSG1, "unexpected length of received data");
+    assert_eq!(n, msg1.len(), "unexpected length of received data");
+    assert_eq!(&buf[..n], &msg1, "unexpected length of received data");
     assert_eq!(ppi, PayloadProtocolIdentifier::Binary, "unexpected ppi");
 
     let (n, ppi) = s1.read_sctp(&mut buf).await?;
-    assert_eq!(n, MSG2.len(), "unexpected length of received data");
-    assert_eq!(&buf[..n], &MSG2, "unexpected length of received data");
+    assert_eq!(n, msg2.len(), "unexpected length of received data");
+    assert_eq!(&buf[..n], &msg2, "unexpected length of received data");
     assert_eq!(ppi, PayloadProtocolIdentifier::Binary, "unexpected ppi");
 
     br.process().await;
@@ -896,8 +884,8 @@ async fn test_assoc_reliable_retransmission() -> Result<()> {
 
 //use std::io::Write;
 
-#[tokio::test]
-async fn test_assoc_reliable_short_buffer() -> Result<()> {
+#[test]
+fn test_assoc_reliable_short_buffer() -> Result<()> {
     /*env_logger::Builder::new()
     .format(|buf, record| {
         writeln!(
@@ -913,7 +901,7 @@ async fn test_assoc_reliable_short_buffer() -> Result<()> {
     .filter(None, log::LevelFilter::Trace)
     .init();*/
 
-    const SI: u16 = 1;
+    const si: u16 = 1;
     const MSG: Bytes = Bytes::from_static(b"Hello");
 
     let (br, ca, cb) = Bridge::new(0, None, None);
@@ -921,7 +909,7 @@ async fn test_assoc_reliable_short_buffer() -> Result<()> {
     let (a0, mut a1) =
         create_new_association_pair(&br, Arc::new(ca), Arc::new(cb), AckMode::NoDelay, 0).await?;
 
-    let (s0, s1) = establish_session_pair(&br, &a0, &mut a1, SI).await?;
+    let (s0, s1) = establish_session_pair(&br, &a0, &mut a1, si).await?;
 
     {
         let a = a0.association_internal.lock().await;
@@ -967,8 +955,8 @@ async fn test_assoc_reliable_short_buffer() -> Result<()> {
 
 //use std::io::Write;
 
-#[tokio::test]
-async fn test_assoc_unreliable_rexmit_ordered_no_fragment() -> Result<()> {
+#[test]
+fn test_assoc_unreliable_rexmit_ordered_no_fragment() -> Result<()> {
     /*env_logger::Builder::new()
     .format(|buf, record| {
         writeln!(
@@ -984,7 +972,7 @@ async fn test_assoc_unreliable_rexmit_ordered_no_fragment() -> Result<()> {
     .filter(None, log::LevelFilter::Trace)
     .init();*/
 
-    const SI: u16 = 1;
+    const si: u16 = 1;
     let mut sbuf = vec![0u8; 1000];
     for i in 0..sbuf.len() {
         sbuf[i] = (i & 0xff) as u8;
@@ -995,7 +983,7 @@ async fn test_assoc_unreliable_rexmit_ordered_no_fragment() -> Result<()> {
     let (a0, mut a1) =
         create_new_association_pair(&br, Arc::new(ca), Arc::new(cb), AckMode::NoDelay, 0).await?;
 
-    let (s0, s1) = establish_session_pair(&br, &a0, &mut a1, SI).await?;
+    let (s0, s1) = establish_session_pair(&br, &a0, &mut a1, si).await?;
 
     // When we set the reliability value to 0 [times], then it will cause
     // the chunk to be abandoned immediately after the first transmission.
@@ -1052,8 +1040,8 @@ async fn test_assoc_unreliable_rexmit_ordered_no_fragment() -> Result<()> {
 
 //use std::io::Write;
 
-#[tokio::test]
-async fn test_assoc_unreliable_rexmit_ordered_fragment() -> Result<()> {
+#[test]
+fn test_assoc_unreliable_rexmit_ordered_fragment() -> Result<()> {
     /*env_logger::Builder::new()
     .format(|buf, record| {
         writeln!(
@@ -1069,7 +1057,7 @@ async fn test_assoc_unreliable_rexmit_ordered_fragment() -> Result<()> {
     .filter(None, log::LevelFilter::Trace)
     .init();*/
 
-    const SI: u16 = 1;
+    const si: u16 = 1;
     let mut sbuf = vec![0u8; 2000];
     for i in 0..sbuf.len() {
         sbuf[i] = (i & 0xff) as u8;
@@ -1080,7 +1068,7 @@ async fn test_assoc_unreliable_rexmit_ordered_fragment() -> Result<()> {
     let (a0, mut a1) =
         create_new_association_pair(&br, Arc::new(ca), Arc::new(cb), AckMode::NoDelay, 0).await?;
 
-    let (s0, s1) = establish_session_pair(&br, &a0, &mut a1, SI).await?;
+    let (s0, s1) = establish_session_pair(&br, &a0, &mut a1, si).await?;
 
     {
         // lock RTO value at 100 [msec]
@@ -1142,8 +1130,8 @@ async fn test_assoc_unreliable_rexmit_ordered_fragment() -> Result<()> {
 
 //use std::io::Write;
 
-#[tokio::test]
-async fn test_assoc_unreliable_rexmit_unordered_no_fragment() -> Result<()> {
+#[test]
+fn test_assoc_unreliable_rexmit_unordered_no_fragment() -> Result<()> {
     /*env_logger::Builder::new()
     .format(|buf, record| {
         writeln!(
@@ -1159,7 +1147,7 @@ async fn test_assoc_unreliable_rexmit_unordered_no_fragment() -> Result<()> {
     .filter(None, log::LevelFilter::Trace)
     .init();*/
 
-    const SI: u16 = 2;
+    const si: u16 = 2;
     let mut sbuf = vec![0u8; 1000];
     for i in 0..sbuf.len() {
         sbuf[i] = (i & 0xff) as u8;
@@ -1170,7 +1158,7 @@ async fn test_assoc_unreliable_rexmit_unordered_no_fragment() -> Result<()> {
     let (a0, mut a1) =
         create_new_association_pair(&br, Arc::new(ca), Arc::new(cb), AckMode::NoDelay, 0).await?;
 
-    let (s0, s1) = establish_session_pair(&br, &a0, &mut a1, SI).await?;
+    let (s0, s1) = establish_session_pair(&br, &a0, &mut a1, si).await?;
 
     // When we set the reliability value to 0 [times], then it will cause
     // the chunk to be abandoned immediately after the first transmission.
@@ -1227,8 +1215,8 @@ async fn test_assoc_unreliable_rexmit_unordered_no_fragment() -> Result<()> {
 
 //use std::io::Write;
 
-#[tokio::test]
-async fn test_assoc_unreliable_rexmit_unordered_fragment() -> Result<()> {
+#[test]
+fn test_assoc_unreliable_rexmit_unordered_fragment() -> Result<()> {
     /*env_logger::Builder::new()
     .format(|buf, record| {
         writeln!(
@@ -1244,7 +1232,7 @@ async fn test_assoc_unreliable_rexmit_unordered_fragment() -> Result<()> {
     .filter(None, log::LevelFilter::Trace)
     .init();*/
 
-    const SI: u16 = 1;
+    const si: u16 = 1;
     let mut sbuf = vec![0u8; 2000];
     for i in 0..sbuf.len() {
         sbuf[i] = (i & 0xff) as u8;
@@ -1255,7 +1243,7 @@ async fn test_assoc_unreliable_rexmit_unordered_fragment() -> Result<()> {
     let (a0, mut a1) =
         create_new_association_pair(&br, Arc::new(ca), Arc::new(cb), AckMode::NoDelay, 0).await?;
 
-    let (s0, s1) = establish_session_pair(&br, &a0, &mut a1, SI).await?;
+    let (s0, s1) = establish_session_pair(&br, &a0, &mut a1, si).await?;
 
     // When we set the reliability value to 0 [times], then it will cause
     // the chunk to be abandoned immediately after the first transmission.
@@ -1322,8 +1310,8 @@ async fn test_assoc_unreliable_rexmit_unordered_fragment() -> Result<()> {
 
 //use std::io::Write;
 
-#[tokio::test]
-async fn test_assoc_unreliable_rexmit_timed_ordered() -> Result<()> {
+#[test]
+fn test_assoc_unreliable_rexmit_timed_ordered() -> Result<()> {
     /*env_logger::Builder::new()
     .format(|buf, record| {
         writeln!(
@@ -1339,7 +1327,7 @@ async fn test_assoc_unreliable_rexmit_timed_ordered() -> Result<()> {
     .filter(None, log::LevelFilter::Trace)
     .init();*/
 
-    const SI: u16 = 3;
+    const si: u16 = 3;
     let mut sbuf = vec![0u8; 1000];
     for i in 0..sbuf.len() {
         sbuf[i] = (i & 0xff) as u8;
@@ -1350,7 +1338,7 @@ async fn test_assoc_unreliable_rexmit_timed_ordered() -> Result<()> {
     let (a0, mut a1) =
         create_new_association_pair(&br, Arc::new(ca), Arc::new(cb), AckMode::NoDelay, 0).await?;
 
-    let (s0, s1) = establish_session_pair(&br, &a0, &mut a1, SI).await?;
+    let (s0, s1) = establish_session_pair(&br, &a0, &mut a1, si).await?;
 
     // When we set the reliability value to 0 [times], then it will cause
     // the chunk to be abandoned immediately after the first transmission.
@@ -1407,8 +1395,8 @@ async fn test_assoc_unreliable_rexmit_timed_ordered() -> Result<()> {
 
 //use std::io::Write;
 
-#[tokio::test]
-async fn test_assoc_unreliable_rexmit_timed_unordered() -> Result<()> {
+#[test]
+fn test_assoc_unreliable_rexmit_timed_unordered() -> Result<()> {
     /*env_logger::Builder::new()
     .format(|buf, record| {
         writeln!(
@@ -1424,7 +1412,7 @@ async fn test_assoc_unreliable_rexmit_timed_unordered() -> Result<()> {
     .filter(None, log::LevelFilter::Trace)
     .init();*/
 
-    const SI: u16 = 3;
+    const si: u16 = 3;
     let mut sbuf = vec![0u8; 1000];
     for i in 0..sbuf.len() {
         sbuf[i] = (i & 0xff) as u8;
@@ -1435,7 +1423,7 @@ async fn test_assoc_unreliable_rexmit_timed_unordered() -> Result<()> {
     let (a0, mut a1) =
         create_new_association_pair(&br, Arc::new(ca), Arc::new(cb), AckMode::NoDelay, 0).await?;
 
-    let (s0, s1) = establish_session_pair(&br, &a0, &mut a1, SI).await?;
+    let (s0, s1) = establish_session_pair(&br, &a0, &mut a1, si).await?;
 
     // When we set the reliability value to 0 [times], then it will cause
     // the chunk to be abandoned immediately after the first transmission.
@@ -1510,8 +1498,8 @@ async fn test_assoc_unreliable_rexmit_timed_unordered() -> Result<()> {
 // 2) Last 3 packet will be received, which triggers fast-retransmission
 // 3) The first one is retransmitted, which makes s1 readable
 // Above should be done before RTO occurs (fast recovery)
-#[tokio::test]
-async fn test_assoc_congestion_control_fast_retransmission() -> Result<()> {
+#[test]
+fn test_assoc_congestion_control_fast_retransmission() -> Result<()> {
     /*env_logger::Builder::new()
     .format(|buf, record| {
         writeln!(
@@ -1527,7 +1515,7 @@ async fn test_assoc_congestion_control_fast_retransmission() -> Result<()> {
     .filter(None, log::LevelFilter::Trace)
     .init();*/
 
-    const SI: u16 = 6;
+    const si: u16 = 6;
     let mut sbuf = vec![0u8; 1000];
     for i in 0..sbuf.len() {
         sbuf[i] = (i & 0xff) as u8;
@@ -1538,7 +1526,7 @@ async fn test_assoc_congestion_control_fast_retransmission() -> Result<()> {
     let (a0, mut a1) =
         create_new_association_pair(&br, Arc::new(ca), Arc::new(cb), AckMode::Normal, 0).await?;
 
-    let (s0, s1) = establish_session_pair(&br, &a0, &mut a1, SI).await?;
+    let (s0, s1) = establish_session_pair(&br, &a0, &mut a1, si).await?;
 
     br.drop_next_nwrites(0, 1).await; // drop the first packet (second one should be sacked)
 
@@ -1601,8 +1589,8 @@ async fn test_assoc_congestion_control_fast_retransmission() -> Result<()> {
 
 //use std::io::Write;
 
-#[tokio::test]
-async fn test_assoc_congestion_control_congestion_avoidance() -> Result<()> {
+#[test]
+fn test_assoc_congestion_control_congestion_avoidance() -> Result<()> {
     /*env_logger::Builder::new()
     .format(|buf, record| {
         writeln!(
@@ -1619,7 +1607,7 @@ async fn test_assoc_congestion_control_congestion_avoidance() -> Result<()> {
     .init();*/
 
     const MAX_RECEIVE_BUFFER_SIZE: u32 = 64 * 1024;
-    const SI: u16 = 6;
+    const si: u16 = 6;
     const N_PACKETS_TO_SEND: u32 = 2000;
 
     let mut sbuf = vec![0u8; 1000];
@@ -1638,7 +1626,7 @@ async fn test_assoc_congestion_control_congestion_avoidance() -> Result<()> {
     )
     .await?;
 
-    let (s0, s1) = establish_session_pair(&br, &a0, &mut a1, SI).await?;
+    let (s0, s1) = establish_session_pair(&br, &a0, &mut a1, si).await?;
 
     {
         let a = a0.association_internal.lock().await;
@@ -1743,8 +1731,8 @@ async fn test_assoc_congestion_control_congestion_avoidance() -> Result<()> {
 
 //use std::io::Write;
 
-#[tokio::test]
-async fn test_assoc_congestion_control_slow_reader() -> Result<()> {
+#[test]
+fn test_assoc_congestion_control_slow_reader() -> Result<()> {
     /*env_logger::Builder::new()
     .format(|buf, record| {
         writeln!(
@@ -1761,7 +1749,7 @@ async fn test_assoc_congestion_control_slow_reader() -> Result<()> {
     .init();*/
 
     const MAX_RECEIVE_BUFFER_SIZE: u32 = 64 * 1024;
-    const SI: u16 = 6;
+    const si: u16 = 6;
     const N_PACKETS_TO_SEND: u32 = 130;
 
     let mut sbuf = vec![0u8; 1000];
@@ -1780,7 +1768,7 @@ async fn test_assoc_congestion_control_slow_reader() -> Result<()> {
     )
     .await?;
 
-    let (s0, s1) = establish_session_pair(&br, &a0, &mut a1, SI).await?;
+    let (s0, s1) = establish_session_pair(&br, &a0, &mut a1, si).await?;
 
     for i in 0..N_PACKETS_TO_SEND {
         sbuf[0..4].copy_from_slice(&i.to_be_bytes());
@@ -1874,8 +1862,8 @@ async fn test_assoc_congestion_control_slow_reader() -> Result<()> {
 /*FIXME
 use std::io::Write;
 
-#[tokio::test]
-async fn test_assoc_delayed_ack() -> Result<()> {
+#[test]
+fn test_assoc_delayed_ack() -> Result<()> {
     env_logger::Builder::new()
         .format(|buf, record| {
             writeln!(
@@ -1891,7 +1879,7 @@ async fn test_assoc_delayed_ack() -> Result<()> {
         .filter(None, log::LevelFilter::Trace)
         .init();
 
-    const SI: u16 = 6;
+    const si: u16 = 6;
     let mut sbuf = vec![0u8; 1000];
     let mut rbuf = vec![0u8; 1500];
     for i in 0..sbuf.len() {
@@ -1904,7 +1892,7 @@ async fn test_assoc_delayed_ack() -> Result<()> {
         create_new_association_pair(&br, Arc::new(ca), Arc::new(cb), AckMode::AlwaysDelay, 0)
             .await?;
 
-    let (s0, s1) = establish_session_pair(&br, &a0, &mut a1, SI).await?;
+    let (s0, s1) = establish_session_pair(&br, &a0, &mut a1, si).await?;
 
     {
         let a = a0.association_internal.lock().await;
@@ -1990,8 +1978,8 @@ async fn test_assoc_delayed_ack() -> Result<()> {
 
 //use std::io::Write;
 
-#[tokio::test]
-async fn test_assoc_reset_close_one_way() -> Result<()> {
+#[test]
+fn test_assoc_reset_close_one_way() -> Result<()> {
     /*env_logger::Builder::new()
     .format(|buf, record| {
         writeln!(
@@ -2007,7 +1995,7 @@ async fn test_assoc_reset_close_one_way() -> Result<()> {
     .filter(None, log::LevelFilter::Trace)
     .init();*/
 
-    const SI: u16 = 1;
+    const si: u16 = 1;
     const MSG: Bytes = Bytes::from_static(b"ABC");
 
     let (br, ca, cb) = Bridge::new(0, None, None);
@@ -2015,7 +2003,7 @@ async fn test_assoc_reset_close_one_way() -> Result<()> {
     let (a0, mut a1) =
         create_new_association_pair(&br, Arc::new(ca), Arc::new(cb), AckMode::NoDelay, 0).await?;
 
-    let (s0, s1) = establish_session_pair(&br, &a0, &mut a1, SI).await?;
+    let (s0, s1) = establish_session_pair(&br, &a0, &mut a1, si).await?;
 
     {
         let a = a0.association_internal.lock().await;
@@ -2085,8 +2073,8 @@ async fn test_assoc_reset_close_one_way() -> Result<()> {
 
 //use std::io::Write;
 
-#[tokio::test]
-async fn test_assoc_reset_close_both_ways() -> Result<()> {
+#[test]
+fn test_assoc_reset_close_both_ways() -> Result<()> {
     /*env_logger::Builder::new()
     .format(|buf, record| {
         writeln!(
@@ -2102,7 +2090,7 @@ async fn test_assoc_reset_close_both_ways() -> Result<()> {
     .filter(None, log::LevelFilter::Trace)
     .init();*/
 
-    const SI: u16 = 1;
+    const si: u16 = 1;
     const MSG: Bytes = Bytes::from_static(b"ABC");
 
     let (br, ca, cb) = Bridge::new(0, None, None);
@@ -2110,7 +2098,7 @@ async fn test_assoc_reset_close_both_ways() -> Result<()> {
     let (a0, mut a1) =
         create_new_association_pair(&br, Arc::new(ca), Arc::new(cb), AckMode::NoDelay, 0).await?;
 
-    let (s0, s1) = establish_session_pair(&br, &a0, &mut a1, SI).await?;
+    let (s0, s1) = establish_session_pair(&br, &a0, &mut a1, si).await?;
 
     {
         let a = a0.association_internal.lock().await;
@@ -2228,8 +2216,8 @@ async fn test_assoc_reset_close_both_ways() -> Result<()> {
 
 //use std::io::Write;
 
-#[tokio::test]
-async fn test_assoc_abort() -> Result<()> {
+#[test]
+fn test_assoc_abort() -> Result<()> {
     /*env_logger::Builder::new()
     .format(|buf, record| {
         writeln!(
@@ -2245,7 +2233,7 @@ async fn test_assoc_abort() -> Result<()> {
     .filter(None, log::LevelFilter::Trace)
     .init();*/
 
-    const SI: u16 = 1;
+    const si: u16 = 1;
     let (br, ca, cb) = Bridge::new(0, None, None);
 
     let (a0, mut a1) =
@@ -2263,7 +2251,7 @@ async fn test_assoc_abort() -> Result<()> {
         a.create_packet(vec![Box::new(abort)]).marshal()?
     };
 
-    let (_s0, _s1) = establish_session_pair(&br, &a0, &mut a1, SI).await?;
+    let (_s0, _s1) = establish_session_pair(&br, &a0, &mut a1, si).await?;
 
     // Both associations are established
     assert_eq!(AssociationState::Established, a0.get_state());
@@ -2319,11 +2307,11 @@ type UResult<T> = std::result::Result<T, util::Error>;
 
 #[async_trait]
 impl Conn for FakeEchoConn {
-    async fn connect(&self, _addr: SocketAddr) -> UResult<()> {
+    fn connect(&self, _addr: SocketAddr) -> UResult<()> {
         Err(io::Error::new(io::ErrorKind::Other, "Not applicable").into())
     }
 
-    async fn recv(&self, b: &mut [u8]) -> UResult<usize> {
+    fn recv(&self, b: &mut [u8]) -> UResult<usize> {
         let mut rd_rx = self.rd_rx.lock().await;
         let v = match rd_rx.recv().await {
             Some(v) => v,
@@ -2337,11 +2325,11 @@ impl Conn for FakeEchoConn {
         Ok(l)
     }
 
-    async fn recv_from(&self, _buf: &mut [u8]) -> UResult<(usize, SocketAddr)> {
+    fn recv_from(&self, _buf: &mut [u8]) -> UResult<(usize, SocketAddr)> {
         Err(io::Error::new(io::ErrorKind::Other, "Not applicable").into())
     }
 
-    async fn send(&self, b: &[u8]) -> UResult<usize> {
+    fn send(&self, b: &[u8]) -> UResult<usize> {
         let wr_tx = self.wr_tx.lock().await;
         match wr_tx.send(b.to_vec()).await {
             Ok(_) => {}
@@ -2351,27 +2339,27 @@ impl Conn for FakeEchoConn {
         Ok(b.len())
     }
 
-    async fn send_to(&self, _buf: &[u8], _target: SocketAddr) -> UResult<usize> {
+    fn send_to(&self, _buf: &[u8], _target: SocketAddr) -> UResult<usize> {
         Err(io::Error::new(io::ErrorKind::Other, "Not applicable").into())
     }
 
-    async fn local_addr(&self) -> UResult<SocketAddr> {
+    fn local_addr(&self) -> UResult<SocketAddr> {
         Err(io::Error::new(io::ErrorKind::AddrNotAvailable, "Addr Not Available").into())
     }
 
-    async fn remote_addr(&self) -> Option<SocketAddr> {
+    fn remote_addr(&self) -> Option<SocketAddr> {
         None
     }
 
-    async fn close(&self) -> UResult<()> {
+    fn close(&self) -> UResult<()> {
         Ok(())
     }
 }
 
 //use std::io::Write;
 
-#[tokio::test]
-async fn test_stats() -> Result<()> {
+#[test]
+fn test_stats() -> Result<()> {
     /*env_logger::Builder::new()
     .format(|buf, record| {
         writeln!(
@@ -2409,7 +2397,7 @@ async fn test_stats() -> Result<()> {
     Ok(())
 }
 
-async fn create_assocs() -> Result<(Association, Association)> {
+fn create_assocs() -> Result<(Association, Association)> {
     let addr1 = SocketAddr::from_str("0.0.0.0:0").unwrap();
     let addr2 = SocketAddr::from_str("0.0.0.0:0").unwrap();
 
@@ -2480,8 +2468,8 @@ async fn create_assocs() -> Result<(Association, Association)> {
 //use std::io::Write;
 //TODO: remove this conditional test
 #[cfg(not(target_os = "windows"))]
-#[tokio::test]
-async fn test_association_shutdown() -> Result<()> {
+#[test]
+fn test_association_shutdown() -> Result<()> {
     /*env_logger::Builder::new()
     .format(|buf, record| {
         writeln!(
@@ -2539,8 +2527,8 @@ async fn test_association_shutdown() -> Result<()> {
 //use std::io::Write;
 //TODO: remove this conditional test
 #[cfg(not(target_os = "windows"))]
-#[tokio::test]
-async fn test_association_shutdown_during_write() -> Result<()> {
+#[test]
+fn test_association_shutdown_during_write() -> Result<()> {
     /*env_logger::Builder::new()
     .format(|buf, record| {
         writeln!(
@@ -2628,8 +2616,8 @@ async fn test_association_shutdown_during_write() -> Result<()> {
 
 //use std::io::Write;
 
-#[tokio::test]
-async fn test_association_handle_packet_before_init() -> Result<()> {
+#[test]
+fn test_association_handle_packet_before_init() -> Result<()> {
     /*env_logger::Builder::new()
     .format(|buf, record| {
         writeln!(
