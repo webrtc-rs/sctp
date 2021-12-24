@@ -502,10 +502,6 @@ fn test_assoc_reliable_ordered_reordered() -> Result<()> {
     for i in 0..sbuf.len() {
         sbuf[i] = (i & 0xff) as u8;
     }
-    let mut sbufl = vec![0u8; 2000];
-    for i in 0..sbufl.len() {
-        sbufl[i] = (i & 0xff) as u8;
-    }
 
     let (mut pair, client_ch, server_ch) = create_association_pair(AckMode::NoDelay, 0)?;
 
@@ -689,70 +685,50 @@ fn test_assoc_reliable_unordered_fragmented_then_defragmented() -> Result<()> {
     Ok(())
 }
 
-/*
-
 #[test]
 fn test_assoc_reliable_unordered_ordered() -> Result<()> {
-    /*env_logger::Builder::new()
-    .format(|buf, record| {
-        writeln!(
-            buf,
-            "{}:{} [{}] {} - {}",
-            record.file().unwrap_or("unknown"),
-            record.line().unwrap_or(0),
-            record.level(),
-            chrono::Local::now().format("%H:%M:%S.%6f"),
-            record.args()
-        )
-    })
-    .filter(None, log::LevelFilter::Trace)
-    .init();*/
+    //let _guard = subscribe();
 
     let si: u16 = 5;
     let mut sbuf = vec![0u8; 1000];
     for i in 0..sbuf.len() {
         sbuf[i] = (i & 0xff) as u8;
     }
-    let mut sbufl = vec![0u8; 2000];
-    for i in 0..sbufl.len() {
-        sbufl[i] = (i & 0xff) as u8;
-    }
 
-    let (br, ca, cb) = Bridge::new(0, None, None);
+    let (mut pair, client_ch, server_ch) = create_association_pair(AckMode::NoDelay, 0)?;
 
-    let (a0, mut a1) =
-        create_new_association_pair(&br, Arc::new(ca), Arc::new(cb), AckMode::NoDelay, 0).await?;
+    establish_session_pair(&mut pair, client_ch, server_ch, si)?;
 
-    let (s0, s1) = establish_session_pair(&br, &a0, &mut a1, si).await?;
-
-    s0.set_reliability_params(true, ReliabilityType::Reliable, 0);
-    s1.set_reliability_params(true, ReliabilityType::Reliable, 0);
-
-    br.reorder_next_nwrites(0, 2).await;
+    pair.client_stream(client_ch, si)?
+        .set_reliability_params(true, ReliabilityType::Reliable, 0);
+    pair.server_stream(server_ch, si)?
+        .set_reliability_params(true, ReliabilityType::Reliable, 0);
 
     sbuf[0..4].copy_from_slice(&0u32.to_be_bytes());
-    let n = s0
-        .write_sctp(
-            &Bytes::from(sbuf.clone()),
-            PayloadProtocolIdentifier::Binary,
-        )
-        .await?;
+    let n = pair.client_stream(client_ch, si)?.write_sctp(
+        &Bytes::from(sbuf.clone()),
+        PayloadProtocolIdentifier::Binary,
+    )?;
     assert_eq!(sbuf.len(), n, "unexpected length of received data");
+    pair.client.drive(pair.time, pair.server.addr);
+    pair.client.delay_outbound(); // Delay it
 
     sbuf[0..4].copy_from_slice(&1u32.to_be_bytes());
-    let n = s0
-        .write_sctp(
-            &Bytes::from(sbuf.clone()),
-            PayloadProtocolIdentifier::Binary,
-        )
-        .await?;
+    let n = pair.client_stream(client_ch, si)?.write_sctp(
+        &Bytes::from(sbuf.clone()),
+        PayloadProtocolIdentifier::Binary,
+    )?;
     assert_eq!(sbuf.len(), n, "unexpected length of received data");
+    pair.client.drive(pair.time, pair.server.addr);
+    pair.client.finish_delay(); // Reorder it
 
-    flush_buffers(&br, &a0, &a1).await;
+    pair.drive();
 
     let mut buf = vec![0u8; 2000];
 
-    let (n, ppi) = s1.read_sctp(&mut buf).await?;
+    let chunks = pair.server_stream(server_ch, si)?.read_sctp()?.unwrap();
+    let (n, ppi) = (chunks.len(), chunks.ppi);
+    chunks.read(&mut buf)?;
     assert_eq!(n, sbuf.len(), "unexpected length of received data");
     assert_eq!(ppi, PayloadProtocolIdentifier::Binary, "unexpected ppi");
     assert_eq!(
@@ -761,7 +737,9 @@ fn test_assoc_reliable_unordered_ordered() -> Result<()> {
         "unexpected received data"
     );
 
-    let (n, ppi) = s1.read_sctp(&mut buf).await?;
+    let chunks = pair.server_stream(server_ch, si)?.read_sctp()?.unwrap();
+    let (n, ppi) = (chunks.len(), chunks.ppi);
+    chunks.read(&mut buf)?;
     assert_eq!(n, sbuf.len(), "unexpected length of received data");
     assert_eq!(ppi, PayloadProtocolIdentifier::Binary, "unexpected ppi");
     assert_eq!(
@@ -770,19 +748,24 @@ fn test_assoc_reliable_unordered_ordered() -> Result<()> {
         "unexpected received data"
     );
 
-    br.process().await;
+    pair.drive();
 
     {
-        let q = s0.reassembly_queue.lock().await;
+        let q = &pair
+            .client_conn_mut(client_ch)
+            .streams
+            .get(&si)
+            .unwrap()
+            .reassembly_queue;
         assert!(!q.is_readable(), "should no longer be readable");
     }
 
-    close_association_pair(&br, a0, a1).await;
+    close_association_pair(&mut pair, client_ch, server_ch, si);
 
     Ok(())
 }
 
-//use std::io::Write;
+/*
 
 #[test]
 fn test_assoc_reliable_retransmission() -> Result<()> {
