@@ -1514,32 +1514,18 @@ fn test_assoc_congestion_control_congestion_avoidance() -> Result<()> {
     while pair.client_conn_mut(client_ch).buffered_amount() > 0
         && n_packets_received < n_packets_to_send
     {
+        //println!("timestamp: {:?}", pair.time);
         /*println!(
-            "pair.server.inbound {}, n_packets_received {}, n_packets_to_send {}",
+            "buffered_amount {}, pair.server.inbound {}, n_packets_received {}, n_packets_to_send {}",
+            pair.client_conn_mut(client_ch).buffered_amount(),
             pair.server.inbound.len(),
             n_packets_received,
             n_packets_to_send
         );*/
-        if pair.server.inbound.is_empty() {
-            break;
-        }
 
         pair.drive_server();
 
-        loop {
-            let readable = {
-                let q = &pair
-                    .server_conn_mut(server_ch)
-                    .streams
-                    .get(&si)
-                    .unwrap()
-                    .reassembly_queue;
-                q.is_readable()
-            };
-            if !readable {
-                break;
-            }
-            let chunks = pair.server_stream(server_ch, si)?.read_sctp()?.unwrap();
+        while let Some(chunks) = pair.server_stream(server_ch, si)?.read_sctp()? {
             let (n, ppi) = (chunks.len(), chunks.ppi);
             chunks.read(&mut rbuf)?;
             assert_eq!(sbuf.len(), n, "unexpected length of received data");
@@ -1557,6 +1543,7 @@ fn test_assoc_congestion_control_congestion_avoidance() -> Result<()> {
     }
 
     pair.drive();
+    //println!("timestamp: {:?}", pair.time);
 
     assert_eq!(
         n_packets_received, n_packets_to_send,
