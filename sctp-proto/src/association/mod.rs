@@ -173,11 +173,11 @@ pub struct Association {
     // Congestion control parameters
     max_receive_buffer_size: u32,
     // my congestion window size
-    cwnd: u32,
+    pub(crate) cwnd: u32,
     // calculated peer's receiver windows size
     rwnd: u32,
     // slow start threshold
-    ssthresh: u32,
+    pub(crate) ssthresh: u32,
     partial_bytes_acked: u32,
     pub(crate) in_fast_recovery: bool,
     fast_recover_exit_point: u32,
@@ -1105,13 +1105,13 @@ impl Association {
     }
 
     fn handle_data(&mut self, d: &ChunkPayloadData) -> Result<Vec<Packet>> {
-        trace!(
+        /*trace!(
             "[{}] DATA: tsn={} immediateSack={} len={}",
             self.side,
             d.tsn,
             d.immediate_sack,
             d.user_data.len()
-        );
+        );*/
         self.stats.inc_datas();
 
         let can_push = self.payload_queue.can_push(d, self.peer_last_tsn);
@@ -1439,10 +1439,10 @@ impl Association {
         //   if possible
         // Meaning, if peer_last_tsn+1 points to a chunk that is received,
         // advance peer_last_tsn until peer_last_tsn+1 points to unreceived chunk.
-        debug!("[{}] peer_last_tsn = {}", self.side, self.peer_last_tsn);
+        //debug!("[{}] peer_last_tsn = {}", self.side, self.peer_last_tsn);
         while self.payload_queue.pop(self.peer_last_tsn + 1).is_some() {
             self.peer_last_tsn += 1;
-            debug!("[{}] peer_last_tsn = {}", self.side, self.peer_last_tsn);
+            //debug!("[{}] peer_last_tsn = {}", self.side, self.peer_last_tsn);
 
             let rst_reqs: Vec<ParamOutgoingResetRequest> =
                 self.reconfig_requests.values().cloned().collect();
@@ -2538,7 +2538,7 @@ impl Association {
                 &self.streams,
             );
 
-            trace!(
+            /*trace!(
                 "[{}] sending ppi={} tsn={} ssn={} sent={} len={} ({},{})",
                 self.side,
                 c.payload_type as u32,
@@ -2548,7 +2548,7 @@ impl Association {
                 c.user_data.len(),
                 c.beginning_fragment,
                 c.ending_fragment
-            );
+            );*/
 
             self.inflight_queue.push_no_check(c.clone());
 

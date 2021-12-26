@@ -328,9 +328,9 @@ impl StreamState {
             self.sequence_number += 1;
         }
 
-        let old_value = self.buffered_amount;
+        //let old_value = self.buffered_amount;
         self.buffered_amount += raw.len();
-        trace!("[{}] bufferedAmount = {}", self.side, old_value + raw.len());
+        //trace!("[{}] bufferedAmount = {}", self.side, old_value + raw.len());
 
         chunks
     }
