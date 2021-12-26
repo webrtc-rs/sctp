@@ -382,10 +382,26 @@ pub fn subscribe() -> tracing::subscriber::DefaultGuard {
 
 fn create_association_pair(
     ack_mode: AckMode,
-    _recv_buf_size: u32,
+    recv_buf_size: u32,
 ) -> Result<(Pair, AssociationHandle, AssociationHandle)> {
-    let mut pair = Pair::default();
-    let (client_ch, server_ch) = pair.connect();
+    let mut pair = Pair::new(
+        Arc::new(EndpointConfig::default()),
+        ServerConfig {
+            transport: Arc::new(if recv_buf_size > 0 {
+                TransportConfig::default().with_max_receive_buffer_size(recv_buf_size)
+            } else {
+                TransportConfig::default()
+            }),
+            ..Default::default()
+        },
+    );
+    let (client_ch, server_ch) = pair.connect_with(ClientConfig {
+        transport: Arc::new(if recv_buf_size > 0 {
+            TransportConfig::default().with_max_receive_buffer_size(recv_buf_size)
+        } else {
+            TransportConfig::default()
+        }),
+    });
     pair.client_conn_mut(client_ch).ack_mode = ack_mode;
     pair.server_conn_mut(server_ch).ack_mode = ack_mode;
     Ok((pair, client_ch, server_ch))
@@ -1487,7 +1503,8 @@ fn test_assoc_congestion_control_congestion_avoidance() -> Result<()> {
         sbuf[i] = (i & 0xff) as u8;
     }
 
-    let (mut pair, client_ch, server_ch) = create_association_pair(AckMode::Normal, 0)?;
+    let (mut pair, client_ch, server_ch) =
+        create_association_pair(AckMode::Normal, max_receive_buffer_size)?;
 
     establish_session_pair(&mut pair, client_ch, server_ch, si)?;
 
@@ -1514,8 +1531,8 @@ fn test_assoc_congestion_control_congestion_avoidance() -> Result<()> {
     while pair.client_conn_mut(client_ch).buffered_amount() > 0
         && n_packets_received < n_packets_to_send
     {
-        //println!("timestamp: {:?}", pair.time);
-        /*println!(
+        /*println!("timestamp: {:?}", pair.time);
+        println!(
             "buffered_amount {}, pair.server.inbound {}, n_packets_received {}, n_packets_to_send {}",
             pair.client_conn_mut(client_ch).buffered_amount(),
             pair.server.inbound.len(),
@@ -1523,7 +1540,7 @@ fn test_assoc_congestion_control_congestion_avoidance() -> Result<()> {
             n_packets_to_send
         );*/
 
-        pair.drive_server();
+        pair.step();
 
         while let Some(chunks) = pair.server_stream(server_ch, si)?.read_sctp()? {
             let (n, ppi) = (chunks.len(), chunks.ppi);
@@ -1539,7 +1556,7 @@ fn test_assoc_congestion_control_congestion_avoidance() -> Result<()> {
             n_packets_received += 1;
         }
 
-        pair.drive_client();
+        //pair.drive_client();
     }
 
     pair.drive();
@@ -1598,57 +1615,33 @@ fn test_assoc_congestion_control_congestion_avoidance() -> Result<()> {
     Ok(())
 }
 
-/*
-
 #[test]
 fn test_assoc_congestion_control_slow_reader() -> Result<()> {
-    /*env_logger::Builder::new()
-    .format(|buf, record| {
-        writeln!(
-            buf,
-            "{}:{} [{}] {} - {}",
-            record.file().unwrap_or("unknown"),
-            record.line().unwrap_or(0),
-            record.level(),
-            chrono::Local::now().format("%H:%M:%S.%6f"),
-            record.args()
-        )
-    })
-    .filter(None, log::LevelFilter::Trace)
-    .init();*/
+    //let _guard = subscribe();
 
-    const MAX_RECEIVE_BUFFER_SIZE: u32 = 64 * 1024;
+    let max_receive_buffer_size: u32 = 64 * 1024;
     let si: u16 = 6;
-    const N_PACKETS_TO_SEND: u32 = 130;
+    let n_packets_to_send: u32 = 130;
 
     let mut sbuf = vec![0u8; 1000];
     for i in 0..sbuf.len() {
         sbuf[i] = (i & 0xff) as u8;
     }
 
-    let (br, ca, cb) = Bridge::new(0, None, None);
+    let (mut pair, client_ch, server_ch) =
+        create_association_pair(AckMode::Normal, max_receive_buffer_size)?;
 
-    let (a0, mut a1) = create_new_association_pair(
-        &br,
-        Arc::new(ca),
-        Arc::new(cb),
-        AckMode::Normal,
-        MAX_RECEIVE_BUFFER_SIZE,
-    )
-    .await?;
+    establish_session_pair(&mut pair, client_ch, server_ch, si)?;
 
-    let (s0, s1) = establish_session_pair(&br, &a0, &mut a1, si).await?;
-
-    for i in 0..N_PACKETS_TO_SEND {
+    for i in 0..n_packets_to_send {
         sbuf[0..4].copy_from_slice(&i.to_be_bytes());
-        let n = s0
-            .write_sctp(
-                &Bytes::from(sbuf.clone()),
-                PayloadProtocolIdentifier::Binary,
-            )
-            .await?;
+        let n = pair.client_stream(client_ch, si)?.write_sctp(
+            &Bytes::from(sbuf.clone()),
+            PayloadProtocolIdentifier::Binary,
+        )?;
         assert_eq!(sbuf.len(), n, "unexpected length of received data");
     }
+    pair.drive_client();
 
     let mut rbuf = vec![0u8; 3000];
 
@@ -1657,37 +1650,35 @@ fn test_assoc_congestion_control_slow_reader() -> Result<()> {
     // 3. Stat reading a1's data
     let mut n_packets_received = 0u32;
     let mut has_rtoed = false;
-    while s0.buffered_amount() > 0 && n_packets_received < N_PACKETS_TO_SEND {
-        loop {
-            let n = br.tick().await;
-            if n == 0 {
-                break;
-            }
-        }
+    while pair.client_conn_mut(client_ch).buffered_amount() > 0
+        && n_packets_received < n_packets_to_send
+    {
+        /*println!(
+            "buffered_amount {}, pair.server.inbound {}, n_packets_received {}, n_packets_to_send {}",
+            pair.client_conn_mut(client_ch).buffered_amount(),
+            pair.server.inbound.len(),
+            n_packets_received,
+            n_packets_to_send
+        );*/
 
         if !has_rtoed {
-            let a = a0.association_internal.lock().await;
-            let b = a1.association_internal.lock().await;
-
-            let rwnd = b.get_my_receiver_window_credit().await;
-            let cwnd = a.cwnd;
-            if cwnd > a.mtu || rwnd > 0 {
+            let rwnd = pair
+                .server_conn_mut(server_ch)
+                .get_my_receiver_window_credit();
+            let cwnd = pair.client_conn_mut(client_ch).cwnd;
+            let cmtu = pair.client_conn_mut(client_ch).mtu;
+            if cwnd > cmtu || rwnd > 0 {
                 // Do not read until a1.getMyReceiverWindowCredit() becomes zero
+                pair.step();
                 continue;
             }
 
             has_rtoed = true;
         }
 
-        loop {
-            let readable = {
-                let q = s1.reassembly_queue.lock().await;
-                q.is_readable()
-            };
-            if !readable {
-                break;
-            }
-            let (n, ppi) = s1.read_sctp(&mut rbuf).await?;
+        while let Some(chunks) = pair.server_stream(server_ch, si)?.read_sctp()? {
+            let (n, ppi) = (chunks.len(), chunks.ppi);
+            chunks.read(&mut rbuf)?;
             assert_eq!(sbuf.len(), n, "unexpected length of received data");
             assert_eq!(
                 n_packets_received,
@@ -1699,35 +1690,38 @@ fn test_assoc_congestion_control_slow_reader() -> Result<()> {
             n_packets_received += 1;
         }
 
-        tokio::time::sleep(Duration::from_millis(4)).await;
+        pair.step();
     }
 
-    br.process().await;
+    pair.drive();
 
     assert_eq!(
-        n_packets_received, N_PACKETS_TO_SEND,
+        n_packets_received, n_packets_to_send,
         "unexpected num of packets received"
     );
     assert_eq!(
         0,
-        s1.get_num_bytes_in_reassembly_queue().await,
+        pair.server_stream(server_ch, si)?
+            .get_num_bytes_in_reassembly_queue(),
         "reassembly queue should be empty"
     );
 
     {
-        let a = a0.association_internal.lock().await;
-        let b = a1.association_internal.lock().await;
-
-        log::debug!("nDATAs      : {}", b.stats.get_num_datas());
-        log::debug!("nSACKs      : {}", a.stats.get_num_sacks());
-        log::debug!("nAckTimeouts: {}", b.stats.get_num_ack_timeouts());
+        let a = pair.client_conn_mut(client_ch);
+        debug!("nSACKs      : {}", a.stats.get_num_sacks());
+    }
+    {
+        let b = pair.server_conn_mut(server_ch);
+        debug!("nDATAs      : {}", b.stats.get_num_datas());
+        debug!("nAckTimeouts: {}", b.stats.get_num_ack_timeouts());
     }
 
-    close_association_pair(&br, a0, a1).await;
+    close_association_pair(&mut pair, client_ch, server_ch, si);
 
     Ok(())
 }
 
+/*
 /*FIXME
 use std::io::Write;
 

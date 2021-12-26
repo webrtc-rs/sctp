@@ -160,7 +160,7 @@ pub struct Association {
     control_queue: VecDeque<Packet>,
     stream_queue: VecDeque<u16>,
 
-    mtu: u32,
+    pub(crate) mtu: u32,
     // max DATA chunk payload size
     max_payload_size: u32,
     cumulative_tsn_ack_point: u32,
@@ -1889,7 +1889,7 @@ impl Association {
         }
     }
 
-    fn get_my_receiver_window_credit(&self) -> u32 {
+    pub(crate) fn get_my_receiver_window_credit(&self) -> u32 {
         let mut bytes_queued = 0;
         for s in self.streams.values() {
             bytes_queued += s.get_num_bytes_in_reassembly_queue() as u32;
