@@ -1,6 +1,6 @@
 [workspace]
-members = [ "sctp-proto"] #"sctp-async",
-default-members = [ "sctp-proto"] #"sctp-async",
+members = [ "sctp-proto", "sctp-async"]
+default-members = [ "sctp-proto", "sctp-async"]
 
 [profile.bench]
 debug = true
