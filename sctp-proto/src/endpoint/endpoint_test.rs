@@ -1397,7 +1397,7 @@ fn test_assoc_unreliable_rexmit_timed_unordered() -> Result<()> {
 //TODO: TestAssocT1CookieTimer
 //TODO: TestAssocT3RtxTimer
 
-/*FIXME:
+/*FIXME
 // 1) Send 4 packets. drop the first one.
 // 2) Last 3 packet will be received, which triggers fast-retransmission
 // 3) The first one is retransmitted, which makes s1 readable
@@ -1440,7 +1440,7 @@ fn test_assoc_congestion_control_fast_retransmission() -> Result<()> {
     }*/
     debug!("advance 500ms");
     pair.time += Duration::from_millis(500);
-    pair.drive();
+    pair.step();
 
     let mut buf = vec![0u8; 3000];
 
@@ -1453,7 +1453,7 @@ fn test_assoc_congestion_control_fast_retransmission() -> Result<()> {
                 .get(&si)
                 .unwrap()
                 .reassembly_queue;
-            assert!(q.is_readable(), "should be readable");
+            assert!(q.is_readable(), "should be readable at {}", i);
         }
 
         let chunks = pair.server_stream(server_ch, si)?.read_sctp()?.unwrap();
@@ -1808,102 +1808,67 @@ fn test_assoc_delayed_ack() -> Result<()> {
     Ok(())
 }
 
-/*
 #[test]
 fn test_assoc_reset_close_one_way() -> Result<()> {
-    /*env_logger::Builder::new()
-    .format(|buf, record| {
-        writeln!(
-            buf,
-            "{}:{} [{}] {} - {}",
-            record.file().unwrap_or("unknown"),
-            record.line().unwrap_or(0),
-            record.level(),
-            chrono::Local::now().format("%H:%M:%S.%6f"),
-            record.args()
-        )
-    })
-    .filter(None, log::LevelFilter::Trace)
-    .init();*/
+    //let _guard = subscribe();
 
     let si: u16 = 1;
-    const MSG: Bytes = Bytes::from_static(b"ABC");
+    let msg: Bytes = Bytes::from_static(b"ABC");
 
-    let (br, ca, cb) = Bridge::new(0, None, None);
+    let (mut pair, client_ch, server_ch) = create_association_pair(AckMode::NoDelay, 0)?;
 
-    let (a0, mut a1) =
-        create_new_association_pair(&br, Arc::new(ca), Arc::new(cb), AckMode::NoDelay, 0).await?;
-
-    let (s0, s1) = establish_session_pair(&br, &a0, &mut a1, si).await?;
+    establish_session_pair(&mut pair, client_ch, server_ch, si)?;
 
     {
-        let a = a0.association_internal.lock().await;
+        let a = pair.client_conn_mut(client_ch);
         assert_eq!(0, a.buffered_amount(), "incorrect bufferedAmount");
     }
 
-    let n = s0
-        .write_sctp(&MSG, PayloadProtocolIdentifier::Binary)
-        .await?;
-    assert_eq!(MSG.len(), n, "unexpected length of received data");
+    let n = pair
+        .client_stream(client_ch, si)?
+        .write_sctp(&msg, PayloadProtocolIdentifier::Binary)?;
+    assert_eq!(msg.len(), n, "unexpected length of received data");
     {
-        let a = a0.association_internal.lock().await;
-        assert_eq!(MSG.len(), a.buffered_amount(), "incorrect bufferedAmount");
+        let a = pair.client_conn_mut(client_ch);
+        assert_eq!(msg.len(), a.buffered_amount(), "incorrect bufferedAmount");
     }
+    pair.step();
 
-    log::debug!("s0.close");
-    s0.close().await?; // send reset
+    debug!("s0.close");
 
-    let (done_ch_tx, mut done_ch_rx) = mpsc::channel(1);
+    //let (done_ch_tx, mut done_ch_rx) = mpsc::channel(1);
     let mut buf = vec![0u8; 32];
 
-    tokio::spawn(async move {
-        loop {
-            log::debug!("s1.read_sctp begin");
-            match s1.read_sctp(&mut buf).await {
-                Ok((n, ppi)) => {
-                    log::debug!("s1.read_sctp done with {:?}", &buf[..n]);
+    while pair.server_stream(server_ch, si).is_ok() {
+        debug!("s1.read_sctp begin");
+        match pair.server_stream(server_ch, si)?.read_sctp() {
+            Ok(chunks_opt) => {
+                if let Some(chunks) = chunks_opt {
+                    let (n, ppi) = (chunks.len(), chunks.ppi);
+                    chunks.read(&mut buf)?;
+                    debug!("s1.read_sctp done with {:?}", &buf[..n]);
                     assert_eq!(ppi, PayloadProtocolIdentifier::Binary, "unexpected ppi");
-                    assert_eq!(n, MSG.len(), "unexpected length of received data");
-                    let _ = done_ch_tx.send(None).await;
+                    assert_eq!(n, msg.len(), "unexpected length of received data");
                 }
-                Err(err) => {
-                    log::debug!("s1.read_sctp err {:?}", err);
-                    let _ = done_ch_tx.send(Some(err)).await;
-                    break;
-                }
+                pair.client_stream(client_ch, si)?.close()?; // send reset
+
+                pair.step();
             }
-        }
-    });
-
-    loop {
-        br.process().await;
-
-        let timer = tokio::time::sleep(Duration::from_millis(10));
-        tokio::pin!(timer);
-
-        tokio::select! {
-            _ = timer.as_mut() =>{},
-            result = done_ch_rx.recv() => {
-                log::debug!("s1. {:?}", result);
-                if let Some(err_opt) = result {
-                    if let Some(err) = err_opt{
-                        assert!(true, "got error {:?}", err);
-                        break;
-                    }
-                }else{
-                    break;
-                }
+            Err(err) => {
+                debug!("s1.read_sctp err {:?}", err);
+                break;
             }
         }
     }
 
-    close_association_pair(&br, a0, a1).await;
+    pair.drive();
+
+    close_association_pair(&mut pair, client_ch, server_ch, si);
 
     Ok(())
 }
 
-//use std::io::Write;
-
+/*
 #[test]
 fn test_assoc_reset_close_both_ways() -> Result<()> {
     /*env_logger::Builder::new()
