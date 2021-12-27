@@ -72,8 +72,7 @@ pub enum ConnectionError {
     /// Communication with the peer has lapsed for longer than the negotiated idle timeout
     ///
     /// If neither side is sending keep-alives, a connection will time out after a long enough idle
-    /// period even if the peer is still reachable. See also [`TransportConfig::max_idle_timeout()`]
-    /// and [`TransportConfig::keep_alive_interval()`].
+    /// period even if the peer is still reachable
     #[error("timed out")]
     TimedOut,
     /// The local application closed the connection
@@ -100,22 +99,22 @@ pub enum Event {
 }
 
 ///Association represents an SCTP association
-///13.2.  Parameters Necessary per Association (i.e., the TCB)
-///Peer : Tag value to be sent in every packet and is received
-///Verification: in the INIT or INIT ACK chunk.
-///Tag :
-///
-///My : Tag expected in every inbound packet and sent in the
-///Verification: INIT or INIT ACK chunk.
-///
-///Tag :
-///State : A state variable indicating what state the association
-/// : is in, i.e., COOKIE-WAIT, COOKIE-ECHOED, ESTABLISHED,
-/// : SHUTDOWN-PENDING, SHUTDOWN-SENT, SHUTDOWN-RECEIVED,
-/// : SHUTDOWN-ACK-SENT.
-///
-/// No Closed state is illustrated since if a
-/// association is Closed its TCB SHOULD be removed.
+//13.2.  Parameters Necessary per Association (i.e., the TCB)
+//Peer : Tag value to be sent in every packet and is received
+//Verification: in the INIT or INIT ACK chunk.
+//Tag :
+//
+//My : Tag expected in every inbound packet and sent in the
+//Verification: INIT or INIT ACK chunk.
+//
+//Tag :
+//State : A state variable indicating what state the association
+// : is in, i.e., COOKIE-WAIT, COOKIE-ECHOED, ESTABLISHED,
+// : SHUTDOWN-PENDING, SHUTDOWN-SENT, SHUTDOWN-RECEIVED,
+// : SHUTDOWN-ACK-SENT.
+//
+// No Closed state is illustrated since if a
+// association is Closed its TCB SHOULD be removed.
 #[derive(Debug)]
 pub struct Association {
     side: Side,

@@ -2,6 +2,7 @@ use thiserror::Error;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Errors triggered during SCTP association operation
 #[derive(Debug, Error, PartialEq)]
 #[non_exhaustive]
 pub enum Error {

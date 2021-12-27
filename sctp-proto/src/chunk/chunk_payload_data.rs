@@ -12,7 +12,7 @@ pub(crate) const PAYLOAD_DATA_HEADER_SIZE: usize = 12;
 
 /// PayloadProtocolIdentifier is an enum for DataChannel payload types
 /// PayloadProtocolIdentifier enums
-/// https://www.iana.org/assignments/sctp-parameters/sctp-parameters.xhtml#sctp-parameters-25
+/// <https://www.iana.org/assignments/sctp-parameters/sctp-parameters.xhtml#sctp-parameters-25>
 #[derive(Debug, Copy, Clone, PartialEq)]
 #[repr(C)]
 pub enum PayloadProtocolIdentifier {

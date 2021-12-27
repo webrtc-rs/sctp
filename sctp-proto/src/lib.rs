@@ -16,9 +16,6 @@
 #![allow(dead_code)]
 #![allow(clippy::too_many_arguments)]
 
-use crate::packet::PartialDecode;
-use crate::shared::EcnCodepoint;
-
 use bytes::Bytes;
 use std::time::Instant;
 use std::{
@@ -27,16 +24,30 @@ use std::{
     ops,
 };
 
-pub mod association;
-pub mod chunk;
-pub mod config;
-pub mod endpoint;
-pub mod error;
-pub mod packet;
-pub mod param;
-pub mod shared;
-pub mod stream;
+mod association;
+pub use crate::association::{Association, ConnectionError, Event};
 
+pub(crate) mod chunk;
+pub use crate::chunk::chunk_payload_data::{ChunkPayloadData, PayloadProtocolIdentifier};
+
+mod config;
+pub use crate::config::{ClientConfig, EndpointConfig, ServerConfig, TransportConfig};
+
+mod endpoint;
+pub use crate::endpoint::{AssociationHandle, ConnectError, DatagramEvent, Endpoint};
+
+mod error;
+pub use crate::error::Error;
+
+mod packet;
+
+mod shared;
+pub use crate::shared::{AssociationEvent, AssociationId, EcnCodepoint, EndpointEvent};
+
+mod stream;
+pub use crate::stream::{ReliabilityType, Stream, StreamEvent, StreamState};
+
+pub(crate) mod param;
 pub(crate) mod queue;
 pub(crate) mod util;
 
@@ -90,6 +101,9 @@ impl ops::Not for Side {
     }
 }
 
+use crate::packet::PartialDecode;
+
+/// Payload in Incoming/outgoing Transmit
 #[derive(Debug)]
 pub enum Payload {
     PartialDecode(PartialDecode),

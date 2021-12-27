@@ -45,6 +45,7 @@ pub enum StreamEvent {
     Available,
 }
 
+/// Reliability type for stream
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum ReliabilityType {
     /// ReliabilityTypeReliable is used for reliable transmission
@@ -190,7 +191,7 @@ impl<'a> std::ops::DerefMut for Stream<'a> {
     }
 }
 
-/// Stream represents an SCTP stream
+/// StreamState represents the state of an SCTP stream
 #[derive(Default, Debug)]
 pub struct StreamState {
     pub(crate) side: Side,
