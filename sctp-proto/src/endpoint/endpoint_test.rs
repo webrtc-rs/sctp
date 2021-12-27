@@ -1397,7 +1397,7 @@ fn test_assoc_unreliable_rexmit_timed_unordered() -> Result<()> {
 //TODO: TestAssocT1CookieTimer
 //TODO: TestAssocT3RtxTimer
 
-/*TODO:
+/*FIXME:
 // 1) Send 4 packets. drop the first one.
 // 2) Last 3 packet will be received, which triggers fast-retransmission
 // 3) The first one is retransmitted, which makes s1 readable
@@ -1721,26 +1721,9 @@ fn test_assoc_congestion_control_slow_reader() -> Result<()> {
     Ok(())
 }
 
-/*
-/*FIXME
-use std::io::Write;
-
 #[test]
 fn test_assoc_delayed_ack() -> Result<()> {
-    env_logger::Builder::new()
-        .format(|buf, record| {
-            writeln!(
-                buf,
-                "{}:{} [{}] {} - {}",
-                record.file().unwrap_or("unknown"),
-                record.line().unwrap_or(0),
-                record.level(),
-                chrono::Local::now().format("%H:%M:%S.%6f"),
-                record.args()
-            )
-        })
-        .filter(None, log::LevelFilter::Trace)
-        .init();
+    //let _guard = subscribe();
 
     let si: u16 = 6;
     let mut sbuf = vec![0u8; 1000];
@@ -1749,79 +1732,67 @@ fn test_assoc_delayed_ack() -> Result<()> {
         sbuf[i] = (i & 0xff) as u8;
     }
 
-    let (br, ca, cb) = Bridge::new(0, None, None);
+    let (mut pair, client_ch, server_ch) = create_association_pair(AckMode::AlwaysDelay, 0)?;
 
-    let (a0, mut a1) =
-        create_new_association_pair(&br, Arc::new(ca), Arc::new(cb), AckMode::AlwaysDelay, 0)
-            .await?;
-
-    let (s0, s1) = establish_session_pair(&br, &a0, &mut a1, si).await?;
+    establish_session_pair(&mut pair, client_ch, server_ch, si)?;
 
     {
-        let a = a0.association_internal.lock().await;
-        let b = a1.association_internal.lock().await;
-        a.stats.reset();
-        b.stats.reset();
+        pair.client_conn_mut(client_ch).stats.reset();
+        pair.server_conn_mut(server_ch).stats.reset();
     }
 
-    let n = s0
-        .write_sctp(
-            &Bytes::from(sbuf.clone()),
-            PayloadProtocolIdentifier::Binary,
-        )
-        .await?;
+    let n = pair.client_stream(client_ch, si)?.write_sctp(
+        &Bytes::from(sbuf.clone()),
+        PayloadProtocolIdentifier::Binary,
+    )?;
     assert_eq!(sbuf.len(), n, "unexpected length of received data");
+    pair.drive_client();
 
     // Repeat calling br.Tick() until the buffered amount becomes 0
-    let since = SystemTime::now();
+    let since = pair.time;
     let mut n_packets_received = 0;
-    while s0.buffered_amount() > 0 {
-        loop {
-            let n = br.tick().await;
-            if n == 0 {
-                break;
-            }
-        }
+    while pair.client_conn_mut(client_ch).buffered_amount() > 0 {
+        pair.step();
 
-        loop {
-            let readable = {
-                let q = s1.reassembly_queue.lock().await;
-                q.is_readable()
-            };
-            if !readable {
-                break;
-            }
-            let (n, ppi) = s1.read_sctp(&mut rbuf).await?;
+        while let Some(chunks) = pair.server_stream(server_ch, si)?.read_sctp()? {
+            let (n, ppi) = (chunks.len(), chunks.ppi);
+            chunks.read(&mut rbuf)?;
             assert_eq!(sbuf.len(), n, "unexpected length of received data");
             assert_eq!(ppi, PayloadProtocolIdentifier::Binary, "unexpected ppi");
 
             n_packets_received += 1;
         }
     }
-    let delay = (SystemTime::now().duration_since(since).unwrap().as_millis() as f64) / 1000.0;
-    log::debug!("received in {} seconds", delay);
+    let delay = (pair.time.duration_since(since).as_millis() as f64) / 1000.0;
+    debug!("received in {} seconds", delay);
     assert!(delay >= 0.2, "should be >= 200msec");
 
-    br.process().await;
+    pair.drive();
 
     assert_eq!(n_packets_received, 1, "unexpected num of packets received");
     assert_eq!(
         0,
-        s1.get_num_bytes_in_reassembly_queue().await,
+        pair.server_stream(server_ch, si)?
+            .get_num_bytes_in_reassembly_queue(),
         "reassembly queue should be empty"
     );
 
-    {
-        let a = a0.association_internal.lock().await;
-        let b = a1.association_internal.lock().await;
+    let a_num_sacks = {
+        let a = pair.client_conn_mut(client_ch);
+        debug!("nSACKs      : {}", a.stats.get_num_sacks());
+        assert_eq!(0, a.stats.get_num_t3timeouts(), "should be no retransmit");
+        a.stats.get_num_sacks()
+    };
 
-        log::debug!("nDATAs      : {}", b.stats.get_num_datas());
-        log::debug!("nSACKs      : {}", a.stats.get_num_sacks());
-        log::debug!("nAckTimeouts: {}", b.stats.get_num_ack_timeouts());
+    {
+        let b = pair.server_conn_mut(server_ch);
+
+        debug!("nDATAs      : {}", b.stats.get_num_datas());
+        debug!("nAckTimeouts: {}", b.stats.get_num_ack_timeouts());
 
         assert_eq!(1, b.stats.get_num_datas(), "DATA chunk count mismatch");
         assert_eq!(
-            a.stats.get_num_sacks(),
+            a_num_sacks,
             b.stats.get_num_datas(),
             "sack count should be equal to the number of data chunks"
         );
@@ -1830,17 +1801,14 @@ fn test_assoc_delayed_ack() -> Result<()> {
             b.stats.get_num_ack_timeouts(),
             "ackTimeout count mismatch"
         );
-        assert_eq!(0, a.stats.get_num_t3timeouts(), "should be no retransmit");
     }
 
-    close_association_pair(&br, a0, a1).await;
+    close_association_pair(&mut pair, client_ch, server_ch, si);
 
     Ok(())
 }
-*/
 
-//use std::io::Write;
-
+/*
 #[test]
 fn test_assoc_reset_close_one_way() -> Result<()> {
     /*env_logger::Builder::new()
