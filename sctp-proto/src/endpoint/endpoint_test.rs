@@ -4,14 +4,28 @@ use crate::error::{Error, Result};
 
 use crate::association::state::{AckMode, AssociationState};
 use crate::chunk::chunk_abort::ChunkAbort;
-use crate::chunk::chunk_payload_data::PayloadProtocolIdentifier;
+use crate::chunk::chunk_cookie_echo::ChunkCookieEcho;
+use crate::chunk::chunk_error::ChunkError;
+use crate::chunk::chunk_forward_tsn::ChunkForwardTsn;
+use crate::chunk::chunk_heartbeat::ChunkHeartbeat;
+use crate::chunk::chunk_init::ChunkInit;
+use crate::chunk::chunk_payload_data::{ChunkPayloadData, PayloadProtocolIdentifier};
+use crate::chunk::chunk_reconfig::ChunkReconfig;
+use crate::chunk::chunk_selective_ack::{ChunkSelectiveAck, GapAckBlock};
+use crate::chunk::chunk_shutdown::ChunkShutdown;
+use crate::chunk::chunk_shutdown_ack::ChunkShutdownAck;
+use crate::chunk::chunk_shutdown_complete::ChunkShutdownComplete;
 use crate::chunk::{ErrorCauseProtocolViolation, PROTOCOL_VIOLATION};
+use crate::packet::{CommonHeader, Packet};
+use crate::param::param_outgoing_reset_request::ParamOutgoingResetRequest;
+use crate::param::param_reconfig_response::ParamReconfigResponse;
 use crate::stream::{ReliabilityType, Stream};
 use assert_matches::assert_matches;
 use lazy_static::lazy_static;
 use std::io::Write;
 use std::net::Ipv6Addr;
 use std::ops::RangeFrom;
+use std::str::FromStr;
 use std::sync::Mutex;
 use std::{cmp, io, mem, net::UdpSocket, time::Duration};
 use tracing::{info, info_span, trace};
@@ -2014,7 +2028,193 @@ fn test_assoc_abort() -> Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn test_association_handle_packet_before_init() -> Result<()> {
+    //let _guard = subscribe();
+
+    let tests = vec![
+        (
+            "InitAck",
+            Packet {
+                common_header: CommonHeader {
+                    source_port: 1,
+                    destination_port: 1,
+                    verification_tag: 0,
+                },
+                chunks: vec![Box::new(ChunkInit {
+                    is_ack: true,
+                    initiate_tag: 1,
+                    num_inbound_streams: 1,
+                    num_outbound_streams: 1,
+                    advertised_receiver_window_credit: 1500,
+                    ..Default::default()
+                })],
+            },
+        ),
+        (
+            "Abort",
+            Packet {
+                common_header: CommonHeader {
+                    source_port: 1,
+                    destination_port: 1,
+                    verification_tag: 0,
+                },
+                chunks: vec![Box::new(ChunkAbort::default())],
+            },
+        ),
+        (
+            "CoockeEcho",
+            Packet {
+                common_header: CommonHeader {
+                    source_port: 1,
+                    destination_port: 1,
+                    verification_tag: 0,
+                },
+                chunks: vec![Box::new(ChunkCookieEcho::default())],
+            },
+        ),
+        (
+            "HeartBeat",
+            Packet {
+                common_header: CommonHeader {
+                    source_port: 1,
+                    destination_port: 1,
+                    verification_tag: 0,
+                },
+                chunks: vec![Box::new(ChunkHeartbeat::default())],
+            },
+        ),
+        (
+            "PayloadData",
+            Packet {
+                common_header: CommonHeader {
+                    source_port: 1,
+                    destination_port: 1,
+                    verification_tag: 0,
+                },
+                chunks: vec![Box::new(ChunkPayloadData::default())],
+            },
+        ),
+        (
+            "Sack",
+            Packet {
+                common_header: CommonHeader {
+                    source_port: 1,
+                    destination_port: 1,
+                    verification_tag: 0,
+                },
+                chunks: vec![Box::new(ChunkSelectiveAck {
+                    cumulative_tsn_ack: 1000,
+                    advertised_receiver_window_credit: 1500,
+                    gap_ack_blocks: vec![GapAckBlock {
+                        start: 100,
+                        end: 200,
+                    }],
+                    ..Default::default()
+                })],
+            },
+        ),
+        (
+            "Reconfig",
+            Packet {
+                common_header: CommonHeader {
+                    source_port: 1,
+                    destination_port: 1,
+                    verification_tag: 0,
+                },
+                chunks: vec![Box::new(ChunkReconfig {
+                    param_a: Some(Box::new(ParamOutgoingResetRequest::default())),
+                    param_b: Some(Box::new(ParamReconfigResponse::default())),
+                })],
+            },
+        ),
+        (
+            "ForwardTSN",
+            Packet {
+                common_header: CommonHeader {
+                    source_port: 1,
+                    destination_port: 1,
+                    verification_tag: 0,
+                },
+                chunks: vec![Box::new(ChunkForwardTsn {
+                    new_cumulative_tsn: 100,
+                    ..Default::default()
+                })],
+            },
+        ),
+        (
+            "Error",
+            Packet {
+                common_header: CommonHeader {
+                    source_port: 1,
+                    destination_port: 1,
+                    verification_tag: 0,
+                },
+                chunks: vec![Box::new(ChunkError::default())],
+            },
+        ),
+        (
+            "Shutdown",
+            Packet {
+                common_header: CommonHeader {
+                    source_port: 1,
+                    destination_port: 1,
+                    verification_tag: 0,
+                },
+                chunks: vec![Box::new(ChunkShutdown::default())],
+            },
+        ),
+        (
+            "ShutdownAck",
+            Packet {
+                common_header: CommonHeader {
+                    source_port: 1,
+                    destination_port: 1,
+                    verification_tag: 0,
+                },
+                chunks: vec![Box::new(ChunkShutdownAck::default())],
+            },
+        ),
+        (
+            "ShutdownComplete",
+            Packet {
+                common_header: CommonHeader {
+                    source_port: 1,
+                    destination_port: 1,
+                    verification_tag: 0,
+                },
+                chunks: vec![Box::new(ChunkShutdownComplete::default())],
+            },
+        ),
+    ];
+
+    let remote = SocketAddr::from_str("0.0.0.0:0").unwrap();
+
+    for (name, packet) in tests {
+        debug!("testing {}", name);
+
+        //let (a_conn, charlie_conn) = pipe();
+        let config = Arc::new(TransportConfig::default());
+        let mut a = Association::new(None, config, 0, remote, None, Instant::now());
+
+        let packet = packet.marshal()?;
+        a.handle_transmit(Transmit {
+            now: Instant::now(),
+            remote,
+            ecn: None,
+            local_ip: None,
+            payload: Payload::RawEncode(vec![packet]),
+        });
+
+        a.close()?;
+    }
+
+    Ok(())
+}
+
 /*
+TODO: The following tests will be moved to sctp-async tests:
 struct FakeEchoConn {
     wr_tx: Mutex<mpsc::Sender<Vec<u8>>>,
     rd_rx: Mutex<mpsc::Receiver<Vec<u8>>>,
@@ -2265,25 +2465,9 @@ fn test_association_shutdown() -> Result<()> {
     Ok(())
 }
 
-//use std::io::Write;
-//TODO: remove this conditional test
-#[cfg(not(target_os = "windows"))]
-#[test]
+
 fn test_association_shutdown_during_write() -> Result<()> {
-    /*env_logger::Builder::new()
-    .format(|buf, record| {
-        writeln!(
-            buf,
-            "{}:{} [{}] {} - {}",
-            record.file().unwrap_or("unknown"),
-            record.line().unwrap_or(0),
-            record.level(),
-            chrono::Local::now().format("%H:%M:%S.%6f"),
-            record.args()
-        )
-    })
-    .filter(None, log::LevelFilter::Trace)
-    .init();*/
+    //let _guard = subscribe();
 
     let (a1, a2) = create_assocs().await?;
 
@@ -2353,186 +2537,4 @@ fn test_association_shutdown_during_write() -> Result<()> {
     }
 
     Ok(())
-}
-
-//use std::io::Write;
-
-#[test]
-fn test_association_handle_packet_before_init() -> Result<()> {
-    /*env_logger::Builder::new()
-    .format(|buf, record| {
-        writeln!(
-            buf,
-            "{}:{} [{}] {} - {}",
-            record.file().unwrap_or("unknown"),
-            record.line().unwrap_or(0),
-            record.level(),
-            chrono::Local::now().format("%H:%M:%S.%6f"),
-            record.args()
-        )
-    })
-    .filter(None, log::LevelFilter::Trace)
-    .init();*/
-
-    let tests = vec![
-        (
-            "InitAck",
-            Packet {
-                source_port: 1,
-                destination_port: 1,
-                verification_tag: 0,
-                chunks: vec![Box::new(ChunkInit {
-                    is_ack: true,
-                    initiate_tag: 1,
-                    num_inbound_streams: 1,
-                    num_outbound_streams: 1,
-                    advertised_receiver_window_credit: 1500,
-                    ..Default::default()
-                })],
-            },
-        ),
-        (
-            "Abort",
-            Packet {
-                source_port: 1,
-                destination_port: 1,
-                verification_tag: 0,
-                chunks: vec![Box::new(ChunkAbort::default())],
-            },
-        ),
-        (
-            "CoockeEcho",
-            Packet {
-                source_port: 1,
-                destination_port: 1,
-                verification_tag: 0,
-                chunks: vec![Box::new(ChunkCookieEcho::default())],
-            },
-        ),
-        (
-            "HeartBeat",
-            Packet {
-                source_port: 1,
-                destination_port: 1,
-                verification_tag: 0,
-                chunks: vec![Box::new(ChunkHeartbeat::default())],
-            },
-        ),
-        (
-            "PayloadData",
-            Packet {
-                source_port: 1,
-                destination_port: 1,
-                verification_tag: 0,
-                chunks: vec![Box::new(ChunkPayloadData::default())],
-            },
-        ),
-        (
-            "Sack",
-            Packet {
-                source_port: 1,
-                destination_port: 1,
-                verification_tag: 0,
-                chunks: vec![Box::new(ChunkSelectiveAck {
-                    cumulative_tsn_ack: 1000,
-                    advertised_receiver_window_credit: 1500,
-                    gap_ack_blocks: vec![GapAckBlock {
-                        start: 100,
-                        end: 200,
-                    }],
-                    ..Default::default()
-                })],
-            },
-        ),
-        (
-            "Reconfig",
-            Packet {
-                source_port: 1,
-                destination_port: 1,
-                verification_tag: 0,
-                chunks: vec![Box::new(ChunkReconfig {
-                    param_a: Some(Box::new(ParamOutgoingResetRequest::default())),
-                    param_b: Some(Box::new(ParamReconfigResponse::default())),
-                })],
-            },
-        ),
-        (
-            "ForwardTSN",
-            Packet {
-                source_port: 1,
-                destination_port: 1,
-                verification_tag: 0,
-                chunks: vec![Box::new(ChunkForwardTsn {
-                    new_cumulative_tsn: 100,
-                    ..Default::default()
-                })],
-            },
-        ),
-        (
-            "Error",
-            Packet {
-                source_port: 1,
-                destination_port: 1,
-                verification_tag: 0,
-                chunks: vec![Box::new(ChunkError::default())],
-            },
-        ),
-        (
-            "Shutdown",
-            Packet {
-                source_port: 1,
-                destination_port: 1,
-                verification_tag: 0,
-                chunks: vec![Box::new(ChunkShutdown::default())],
-            },
-        ),
-        (
-            "ShutdownAck",
-            Packet {
-                source_port: 1,
-                destination_port: 1,
-                verification_tag: 0,
-                chunks: vec![Box::new(ChunkShutdownAck::default())],
-            },
-        ),
-        (
-            "ShutdownComplete",
-            Packet {
-                source_port: 1,
-                destination_port: 1,
-                verification_tag: 0,
-                chunks: vec![Box::new(ChunkShutdownComplete::default())],
-            },
-        ),
-    ];
-
-    for (name, packet) in tests {
-        log::debug!("testing {}", name);
-
-        let (a_conn, charlie_conn) = pipe();
-
-        let (a, _) = Association::new(
-            Config {
-                net_conn: Arc::new(a_conn),
-                max_message_size: 0,
-                max_receive_buffer_size: 0,
-                name: "client".to_owned(),
-            },
-            true,
-        )
-        .await
-        .unwrap();
-
-        let packet = packet.marshal()?;
-        let result = charlie_conn.send(&packet).await;
-        assert!(result.is_ok(), "{} charlie_conn.send should be ok", name);
-
-        // Should not panic.
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        a.close().await.unwrap();
-    }
-
-    Ok(())
-}
- */
+}*/

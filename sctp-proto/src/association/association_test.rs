@@ -1,5 +1,4 @@
 use super::*;
-use std::str::FromStr;
 
 const ACCEPT_CH_SIZE: usize = 16;
 
