@@ -1834,9 +1834,6 @@ fn test_assoc_reset_close_one_way() -> Result<()> {
     }
     pair.step();
 
-    debug!("s0.close");
-
-    //let (done_ch_tx, mut done_ch_rx) = mpsc::channel(1);
     let mut buf = vec![0u8; 32];
 
     while pair.server_stream(server_ch, si).is_ok() {
@@ -1850,6 +1847,8 @@ fn test_assoc_reset_close_one_way() -> Result<()> {
                     assert_eq!(ppi, PayloadProtocolIdentifier::Binary, "unexpected ppi");
                     assert_eq!(n, msg.len(), "unexpected length of received data");
                 }
+
+                debug!("s0.close");
                 pair.client_stream(client_ch, si)?.close()?; // send reset
 
                 pair.step();
@@ -1868,149 +1867,91 @@ fn test_assoc_reset_close_one_way() -> Result<()> {
     Ok(())
 }
 
-/*
 #[test]
 fn test_assoc_reset_close_both_ways() -> Result<()> {
-    /*env_logger::Builder::new()
-    .format(|buf, record| {
-        writeln!(
-            buf,
-            "{}:{} [{}] {} - {}",
-            record.file().unwrap_or("unknown"),
-            record.line().unwrap_or(0),
-            record.level(),
-            chrono::Local::now().format("%H:%M:%S.%6f"),
-            record.args()
-        )
-    })
-    .filter(None, log::LevelFilter::Trace)
-    .init();*/
+    //let _guard = subscribe();
 
     let si: u16 = 1;
-    const MSG: Bytes = Bytes::from_static(b"ABC");
+    let msg: Bytes = Bytes::from_static(b"ABC");
 
-    let (br, ca, cb) = Bridge::new(0, None, None);
+    let (mut pair, client_ch, server_ch) = create_association_pair(AckMode::NoDelay, 0)?;
 
-    let (a0, mut a1) =
-        create_new_association_pair(&br, Arc::new(ca), Arc::new(cb), AckMode::NoDelay, 0).await?;
-
-    let (s0, s1) = establish_session_pair(&br, &a0, &mut a1, si).await?;
+    establish_session_pair(&mut pair, client_ch, server_ch, si)?;
 
     {
-        let a = a0.association_internal.lock().await;
+        let a = pair.client_conn_mut(client_ch);
         assert_eq!(0, a.buffered_amount(), "incorrect bufferedAmount");
     }
 
-    let n = s0
-        .write_sctp(&MSG, PayloadProtocolIdentifier::Binary)
-        .await?;
-    assert_eq!(MSG.len(), n, "unexpected length of received data");
+    let n = pair
+        .client_stream(client_ch, si)?
+        .write_sctp(&msg, PayloadProtocolIdentifier::Binary)?;
+    assert_eq!(msg.len(), n, "unexpected length of received data");
     {
-        let a = a0.association_internal.lock().await;
-        assert_eq!(MSG.len(), a.buffered_amount(), "incorrect bufferedAmount");
+        let a = pair.client_conn_mut(client_ch);
+        assert_eq!(msg.len(), a.buffered_amount(), "incorrect bufferedAmount");
     }
+    pair.step();
 
-    log::debug!("s0.close");
-    s0.close().await?; // send reset
+    let mut buf = vec![0u8; 32];
 
-    let (done_ch_tx, mut done_ch_rx) = mpsc::channel(1);
-    let done_ch_tx = Arc::new(done_ch_tx);
-
-    let done_ch_tx1 = Arc::clone(&done_ch_tx);
-    let ss1 = Arc::clone(&s1);
-    tokio::spawn(async move {
-        let mut buf = vec![0u8; 32];
-        loop {
-            log::debug!("s1.read_sctp begin");
-            match ss1.read_sctp(&mut buf).await {
-                Ok((n, ppi)) => {
-                    log::debug!("s1.read_sctp done with {:?}", &buf[..n]);
-                    assert_eq!(ppi, PayloadProtocolIdentifier::Binary, "unexpected ppi");
-                    assert_eq!(n, MSG.len(), "unexpected length of received data");
-                    let _ = done_ch_tx1.send(None).await;
+    while pair.server_stream(server_ch, si).is_ok() || pair.client_stream(client_ch, si).is_ok() {
+        if pair.server_stream(server_ch, si).is_ok() {
+            debug!("s1.read_sctp begin");
+            match pair.server_stream(server_ch, si)?.read_sctp() {
+                Ok(chunks_opt) => {
+                    if let Some(chunks) = chunks_opt {
+                        let (n, ppi) = (chunks.len(), chunks.ppi);
+                        chunks.read(&mut buf)?;
+                        debug!("s1.read_sctp done with {:?}", &buf[..n]);
+                        assert_eq!(ppi, PayloadProtocolIdentifier::Binary, "unexpected ppi");
+                        assert_eq!(n, msg.len(), "unexpected length of received data");
+                    }
                 }
                 Err(err) => {
-                    log::debug!("s1.read_sctp err {:?}", err);
-                    let _ = done_ch_tx1.send(Some(err)).await;
+                    debug!("s1.read_sctp err {:?}", err);
                     break;
                 }
             }
         }
-    });
 
-    loop {
-        br.process().await;
-
-        let timer = tokio::time::sleep(Duration::from_millis(10));
-        tokio::pin!(timer);
-
-        tokio::select! {
-            _ = timer.as_mut() =>{},
-            result = done_ch_rx.recv() => {
-                log::debug!("s1. {:?}", result);
-                if let Some(err_opt) = result {
-                    if let Some(err) = err_opt{
-                        assert!(true, "got error {:?}", err);
-                        break;
+        if pair.client_stream(client_ch, si).is_ok() {
+            debug!("s0.read_sctp begin");
+            match pair.client_stream(client_ch, si)?.read_sctp() {
+                Ok(chunks_opt) => {
+                    if let Some(chunks) = chunks_opt {
+                        let (n, ppi) = (chunks.len(), chunks.ppi);
+                        chunks.read(&mut buf)?;
+                        debug!("s0.read_sctp done with {:?}", &buf[..n]);
+                        assert_eq!(ppi, PayloadProtocolIdentifier::Binary, "unexpected ppi");
+                        assert_eq!(n, msg.len(), "unexpected length of received data");
                     }
-                }else{
-                    break;
-                }
-            }
-        }
-    }
-
-    log::debug!("s1.close");
-    s1.close().await?; // send reset
-
-    let done_ch_tx0 = Arc::clone(&done_ch_tx);
-    tokio::spawn(async move {
-        let mut buf = vec![0u8; 32];
-        loop {
-            log::debug!("s.read_sctp begin");
-            match s0.read_sctp(&mut buf).await {
-                Ok(_) => {
-                    assert!(false, "must be error");
                 }
                 Err(err) => {
-                    log::debug!("s0.read_sctp err {:?}", err);
-                    let _ = done_ch_tx0.send(Some(err)).await;
+                    debug!("s0.read_sctp err {:?}", err);
                     break;
                 }
             }
         }
-    });
 
-    loop {
-        br.process().await;
-
-        let timer = tokio::time::sleep(Duration::from_millis(10));
-        tokio::pin!(timer);
-
-        tokio::select! {
-            _ = timer.as_mut() =>{},
-            result = done_ch_rx.recv() => {
-                log::debug!("s0. {:?}", result);
-                if let Some(err_opt) = result {
-                    if let Some(err) = err_opt{
-                        assert!(true, "got error {:?}", err);
-                        break;
-                    }else{
-                        assert!(false, "must be error");
-                    }
-                }else{
-                    break;
-                }
-            }
+        if pair.client_stream(client_ch, si).is_ok() {
+            pair.client_stream(client_ch, si)?.close()?; // send reset
         }
+        if pair.server_stream(server_ch, si).is_ok() {
+            pair.server_stream(server_ch, si)?.close()?; // send reset
+        }
+
+        pair.step();
     }
 
-    close_association_pair(&br, a0, a1).await;
+    pair.drive();
+
+    close_association_pair(&mut pair, client_ch, server_ch, si);
 
     Ok(())
 }
 
-//use std::io::Write;
+/*
 
 #[test]
 fn test_assoc_abort() -> Result<()> {
