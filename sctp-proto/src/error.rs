@@ -155,8 +155,8 @@ pub enum Error {
     #[error("try again")]
     ErrTryAgain,
 
-    #[error("abort chunk, with following errors")]
-    ErrChunk,
+    #[error("abort chunk, with following errors: {0}")]
+    ErrAbortChunk(String),
     #[error("shutdown called in non-Established state")]
     ErrShutdownNonEstablished,
     #[error("association closed before connecting")]

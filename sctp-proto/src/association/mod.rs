@@ -483,6 +483,7 @@ impl Association {
 
             if let Err(err) = self.handle_inbound(pkt, transmit.now) {
                 error!("handle_inbound got err: {}", err);
+                let _ = self.close();
             }
         } else {
             trace!("discarding invalid partial_decode");
@@ -798,10 +799,18 @@ impl Association {
             } else {
                 self.handle_init(p, c)?
             }
-        } else if chunk_any.downcast_ref::<ChunkAbort>().is_some()
-            || chunk_any.downcast_ref::<ChunkError>().is_some()
-        {
-            return Err(Error::ErrChunk);
+        } else if let Some(c) = chunk_any.downcast_ref::<ChunkAbort>() {
+            let mut err_str = String::new();
+            for e in &c.error_causes {
+                err_str += &format!("({})", e);
+            }
+            return Err(Error::ErrAbortChunk(err_str));
+        } else if let Some(c) = chunk_any.downcast_ref::<ChunkError>() {
+            let mut err_str = String::new();
+            for e in &c.error_causes {
+                err_str += &format!("({})", e);
+            }
+            return Err(Error::ErrAbortChunk(err_str));
         } else if let Some(c) = chunk_any.downcast_ref::<ChunkHeartbeat>() {
             self.handle_heartbeat(c)?
         } else if let Some(c) = chunk_any.downcast_ref::<ChunkCookieEcho>() {
@@ -1836,7 +1845,7 @@ impl Association {
 
     /// create_packet wraps chunks in a packet.
     /// The caller should hold the read lock.
-    fn create_packet(&self, chunks: Vec<Box<dyn Chunk + Send + Sync>>) -> Packet {
+    pub(crate) fn create_packet(&self, chunks: Vec<Box<dyn Chunk + Send + Sync>>) -> Packet {
         Packet {
             common_header: CommonHeader {
                 verification_tag: self.peer_verification_tag,

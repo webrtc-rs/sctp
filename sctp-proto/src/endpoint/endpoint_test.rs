@@ -2,8 +2,10 @@ use super::*;
 use crate::association::Event;
 use crate::error::{Error, Result};
 
-use crate::association::state::AckMode;
+use crate::association::state::{AckMode, AssociationState};
+use crate::chunk::chunk_abort::ChunkAbort;
 use crate::chunk::chunk_payload_data::PayloadProtocolIdentifier;
+use crate::chunk::{ErrorCauseProtocolViolation, PROTOCOL_VIOLATION};
 use crate::stream::{ReliabilityType, Stream};
 use assert_matches::assert_matches;
 use lazy_static::lazy_static;
@@ -1951,66 +1953,68 @@ fn test_assoc_reset_close_both_ways() -> Result<()> {
     Ok(())
 }
 
-/*
-
 #[test]
 fn test_assoc_abort() -> Result<()> {
-    /*env_logger::Builder::new()
-    .format(|buf, record| {
-        writeln!(
-            buf,
-            "{}:{} [{}] {} - {}",
-            record.file().unwrap_or("unknown"),
-            record.line().unwrap_or(0),
-            record.level(),
-            chrono::Local::now().format("%H:%M:%S.%6f"),
-            record.args()
-        )
-    })
-    .filter(None, log::LevelFilter::Trace)
-    .init();*/
+    //let _guard = subscribe();
 
     let si: u16 = 1;
-    let (br, ca, cb) = Bridge::new(0, None, None);
 
-    let (a0, mut a1) =
-        create_new_association_pair(&br, Arc::new(ca), Arc::new(cb), AckMode::NoDelay, 0).await?;
+    let (mut pair, client_ch, server_ch) = create_association_pair(AckMode::NoDelay, 0)?;
 
-    let abort = ChunkAbort {
-        error_causes: vec![ErrorCauseProtocolViolation {
-            code: PROTOCOL_VIOLATION,
-            ..Default::default()
-        }],
+    establish_session_pair(&mut pair, client_ch, server_ch, si)?;
+
+    let transmit = {
+        let abort = ChunkAbort {
+            error_causes: vec![ErrorCauseProtocolViolation {
+                code: PROTOCOL_VIOLATION,
+                ..Default::default()
+            }],
+        };
+
+        let packet = pair
+            .client_conn_mut(client_ch)
+            .create_packet(vec![Box::new(abort)])
+            .marshal()?;
+
+        Transmit {
+            now: pair.time,
+            remote: pair.server.addr,
+            ecn: None,
+            local_ip: None,
+            payload: Payload::RawEncode(vec![packet]),
+        }
     };
-
-    let packet = {
-        let a = a0.association_internal.lock().await;
-        a.create_packet(vec![Box::new(abort)]).marshal()?
-    };
-
-    let (_s0, _s1) = establish_session_pair(&br, &a0, &mut a1, si).await?;
 
     // Both associations are established
-    assert_eq!(AssociationState::Established, a0.get_state());
-    assert_eq!(AssociationState::Established, a1.get_state());
+    assert_eq!(
+        AssociationState::Established,
+        pair.client_conn_mut(client_ch).state()
+    );
+    assert_eq!(
+        AssociationState::Established,
+        pair.server_conn_mut(server_ch).state()
+    );
 
-    let result = a0.net_conn.send(&packet).await;
-    assert!(result.is_ok(), "must be ok");
+    debug!("send ChunkAbort");
+    pair.client.outbound.push_back(transmit);
 
-    flush_buffers(&br, &a0, &a1).await;
-
-    // There is a little delay before changing the state to closed
-    tokio::time::sleep(Duration::from_millis(10)).await;
+    pair.drive();
 
     // The receiving association should be closed because it got an ABORT
-    assert_eq!(AssociationState::Established, a0.get_state());
-    assert_eq!(AssociationState::Closed, a1.get_state());
+    assert_eq!(
+        AssociationState::Established,
+        pair.client_conn_mut(client_ch).state()
+    );
+    assert_eq!(
+        AssociationState::Closed,
+        pair.server_conn_mut(server_ch).state()
+    );
 
-    close_association_pair(&br, a0, a1).await;
+    close_association_pair(&mut pair, client_ch, server_ch, si);
 
     Ok(())
 }
-
+/*
 struct FakeEchoConn {
     wr_tx: Mutex<mpsc::Sender<Vec<u8>>>,
     rd_rx: Mutex<mpsc::Receiver<Vec<u8>>>,
