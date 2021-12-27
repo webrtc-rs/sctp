@@ -51,7 +51,7 @@ mod timer;
 #[cfg(test)]
 mod association_test;
 
-/// Reasons why a connection might be lost
+/// Reasons why an association might be lost
 #[derive(Debug, Error, PartialEq)]
 pub enum ConnectionError {
     /// Handshake failed
@@ -60,22 +60,22 @@ pub enum ConnectionError {
     /// The peer violated the QUIC specification as understood by this implementation
     #[error("transport error")]
     TransportError,
-    /// The peer's QUIC stack aborted the connection automatically
+    /// The peer's QUIC stack aborted the association automatically
     #[error("aborted by peer")]
     ConnectionClosed,
-    /// The peer closed the connection
+    /// The peer closed the association
     #[error("closed by peer")]
     ApplicationClosed,
-    /// The peer is unable to continue processing this connection, usually due to having restarted
+    /// The peer is unable to continue processing this association, usually due to having restarted
     #[error("reset by peer")]
     Reset,
     /// Communication with the peer has lapsed for longer than the negotiated idle timeout
     ///
-    /// If neither side is sending keep-alives, a connection will time out after a long enough idle
+    /// If neither side is sending keep-alives, an association will time out after a long enough idle
     /// period even if the peer is still reachable
     #[error("timed out")]
     TimedOut,
-    /// The local application closed the connection
+    /// The local application closed the association
     #[error("closed")]
     LocallyClosed,
 }
@@ -83,13 +83,13 @@ pub enum ConnectionError {
 /// Events of interest to the application
 #[derive(Debug)]
 pub enum Event {
-    /// The connection was successfully established
+    /// The association was successfully established
     Connected,
-    /// The connection was lost
+    /// The association was lost
     ///
-    /// Emitted if the peer closes the connection or an error is encountered.
+    /// Emitted if the peer closes the association or an error is encountered.
     ConnectionLost {
-        /// Reason that the connection was closed
+        /// Reason that the association was closed
         reason: ConnectionError,
     },
     /// Stream events
@@ -366,7 +366,7 @@ impl Association {
 
     /// Returns application-facing event
     ///
-    /// Connections should be polled for events after:
+    /// Associations should be polled for events after:
     /// - a call was made to `handle_transmit`
     /// - a call was made to `handle_timeout`
     #[must_use]
@@ -395,7 +395,7 @@ impl Association {
     /// Returns the next time at which `handle_timeout` should be called
     ///
     /// The value returned may change after:
-    /// - the application performed some I/O on the connection
+    /// - the application performed some I/O on the association
     /// - a call was made to `handle_transmit`
     /// - a call to `poll_transmit` returned `Some`
     /// - a call was made to `handle_timeout`
@@ -504,11 +504,11 @@ impl Association {
 
     /// Whether the Association is closed
     ///
-    /// Closed Associations cannot transport any further data. A connection becomes closed when
+    /// Closed Associations cannot transport any further data. An association becomes closed when
     /// either peer application intentionally closes it, or when either transport layer detects an
     /// error such as a time-out or certificate validation failure.
     ///
-    /// A `ConnectionLost` event is emitted with details when the connection becomes closed.
+    /// A `ConnectionLost` event is emitted with details when the association becomes closed.
     pub fn is_closed(&self) -> bool {
         self.state == AssociationState::Closed
     }
@@ -529,7 +529,7 @@ impl Association {
     }
 
     /// The local IP address which was used when the peer established
-    /// the connection
+    /// the association
     ///
     /// This can be different from the address the endpoint is bound to, in case
     /// the endpoint is bound to a wildcard address like `0.0.0.0` or `::`.
@@ -547,7 +547,7 @@ impl Association {
     }
 
     /// Shutdown initiates the shutdown sequence. The method blocks until the
-    /// shutdown sequence is completed and the connection is closed, or until the
+    /// shutdown sequence is completed and the association is closed, or until the
     /// passed context is done, in which case the context's error is returned.
     pub fn shutdown(&mut self) -> Result<()> {
         debug!("[{}] closing association..", self.side);

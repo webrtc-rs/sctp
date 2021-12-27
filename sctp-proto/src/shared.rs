@@ -1,6 +1,6 @@
 use crate::Transmit;
 
-/// Events sent from an Endpoint to a Association
+/// Events sent from an Endpoint to an Association
 #[derive(Debug)]
 pub struct AssociationEvent(pub(crate) AssociationEventInner);
 
@@ -12,7 +12,7 @@ pub(crate) enum AssociationEventInner {
     //NewIdentifiers(Vec<IssuedAid>, Instant),
 }
 
-/// Events sent from a Association to an Endpoint
+/// Events sent from an Association to an Endpoint
 #[derive(Debug)]
 pub struct EndpointEvent(pub(crate) EndpointEventInner);
 
@@ -27,7 +27,7 @@ impl EndpointEvent {
 
     /// Determine whether this is the last event a `Association` will emit
     ///
-    /// Useful for determining when connection-related event loop state can be freed.
+    /// Useful for determining when association-related event loop state can be freed.
     pub fn is_drained(&self) -> bool {
         self.0 == EndpointEventInner::Drained
     }
@@ -44,7 +44,7 @@ pub(crate) enum EndpointEventInner {
     RetireAssociationId(Instant, u64, bool),*/
 }
 
-/// Protocol-level identifier for a Association.
+/// Protocol-level identifier for an Association.
 ///
 /// Mainly useful for identifying this Association's packets on the wire with tools like Wireshark.
 pub type AssociationId = u32;

@@ -27,7 +27,7 @@ pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && constant_time_ne(a, b) == 0
 }
 
-/// Generates association id for incoming connections
+/// Generates association id for incoming associations
 pub trait AssociationIdGenerator: Send {
     /// Generates a new AID
     ///

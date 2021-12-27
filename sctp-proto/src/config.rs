@@ -71,7 +71,7 @@ impl TransportConfig {
     }
 }
 
-/// Global configuration for the endpoint, affecting all connections
+/// Global configuration for the endpoint, affecting all associations
 ///
 /// Default values should be suitable for most internet applications.
 #[derive(Clone)]
@@ -152,23 +152,23 @@ impl fmt::Debug for EndpointConfig {
     }
 }
 
-/// Parameters governing incoming connections
+/// Parameters governing incoming associations
 ///
 /// Default values should be suitable for most internet applications.
 #[derive(Clone)]
 pub struct ServerConfig {
-    /// Transport configuration to use for incoming connections
+    /// Transport configuration to use for incoming associations
     pub transport: Arc<TransportConfig>,
 
-    /// Maximum number of concurrent connections
-    pub(crate) concurrent_connections: u32,
+    /// Maximum number of concurrent associations
+    pub(crate) concurrent_associations: u32,
 }
 
 impl Default for ServerConfig {
     fn default() -> Self {
         ServerConfig {
             transport: Arc::new(TransportConfig::default()),
-            concurrent_connections: 100_000,
+            concurrent_associations: 100_000,
         }
     }
 }
@@ -180,7 +180,7 @@ impl ServerConfig {
     }
 }
 
-/// Configuration for outgoing connections
+/// Configuration for outgoing associations
 ///
 /// Default values should be suitable for most internet applications.
 #[derive(Clone)]

@@ -241,7 +241,7 @@ impl Pair {
         }
     }
 
-    /// Returns whether the connection is not idle
+    /// Returns whether the association is not idle
     pub fn step(&mut self) -> bool {
         self.drive_client();
         self.drive_server();
@@ -271,7 +271,7 @@ impl Pair {
         }
     }
 
-    /// Advance time until both connections are idle
+    /// Advance time until both associations are idle
     pub fn drive(&mut self) {
         while self.step() {}
     }

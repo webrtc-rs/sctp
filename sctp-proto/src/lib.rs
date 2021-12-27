@@ -51,13 +51,13 @@ pub(crate) mod param;
 pub(crate) mod queue;
 pub(crate) mod util;
 
-/// Whether an endpoint was the initiator of a connection
+/// Whether an endpoint was the initiator of an association
 #[cfg_attr(feature = "arbitrary", derive(Arbitrary))]
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum Side {
-    /// The initiator of a connection
+    /// The initiator of an association
     Client = 0,
-    /// The acceptor of a connection
+    /// The acceptor of an association
     Server = 1,
 }
 

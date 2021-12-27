@@ -31,16 +31,16 @@ use tracing::{debug, trace};
 /// The main entry point to the library
 ///
 /// This object performs no I/O whatsoever. Instead, it generates a stream of packets to send via
-/// `poll_transmit`, and consumes incoming packets and connection-generated events via `handle` and
+/// `poll_transmit`, and consumes incoming packets and association-generated events via `handle` and
 /// `handle_event`.
 pub struct Endpoint {
     rng: StdRng,
     transmits: VecDeque<Transmit>,
-    /// Identifies connections based on the INIT Dst AID the peer utilized
+    /// Identifies associations based on the INIT Dst AID the peer utilized
     ///
     /// Uses a standard `HashMap` to protect against hash collision attacks.
     connection_ids_init: HashMap<AssociationId, AssociationHandle>,
-    /// Identifies connections based on locally created CIDs
+    /// Identifies associations based on locally created CIDs
     ///
     /// Uses a cheaper hash function since keys are locally created
     connection_ids: FxHashMap<AssociationId, AssociationHandle>,
@@ -49,7 +49,7 @@ pub struct Endpoint {
     local_cid_generator: Box<dyn AssociationIdGenerator>,
     config: Arc<EndpointConfig>,
     server_config: Option<Arc<ServerConfig>>,
-    /// Whether incoming connections should be unconditionally rejected by a server
+    /// Whether incoming associations should be unconditionally rejected by a server
     ///
     /// Equivalent to a `ServerConfig.accept_buffer` of `0`, but can be changed after the endpoint is constructed.
     reject_new_connections: bool,
@@ -84,9 +84,9 @@ impl Endpoint {
         self.server_config = server_config;
     }
 
-    /// Process `EndpointEvent`s emitted from related `Connection`s
+    /// Process `EndpointEvent`s emitted from related `Association`s
     ///
-    /// In turn, processing this event may return a `ConnectionEvent` for the same `Connection`.
+    /// In turn, processing this event may return a `ConnectionEvent` for the same `Association`.
     pub fn handle_event(&mut self, ch: AssociationHandle, event: EndpointEvent) {
         use EndpointEventInner::*;
         match event.0 {
@@ -118,7 +118,7 @@ impl Endpoint {
         };
 
         //
-        // Handle packet on existing connection, if any
+        // Handle packet on existing association, if any
         //
         let dst_cid = partial_decode.common_header.verification_tag;
         let known_ch = if dst_cid > 0 {
@@ -152,13 +152,13 @@ impl Endpoint {
         }
 
         //
-        // Potentially create a new connection
+        // Potentially create a new association
         //
         self.handle_first_packet(now, remote, local_ip, ecn, partial_decode)
             .map(|(ch, a)| (ch, DatagramEvent::NewAssociation(a)))
     }
 
-    /// Initiate a Association
+    /// Initiate an Association
     pub fn connect(
         &mut self,
         config: ClientConfig,
@@ -212,7 +212,7 @@ impl Endpoint {
 
         let server_config = self.server_config.as_ref().unwrap();
 
-        if self.connections.len() >= server_config.concurrent_connections as usize
+        if self.connections.len() >= server_config.concurrent_associations as usize
             || self.reject_new_connections
             || self.is_full()
         {
@@ -280,7 +280,7 @@ impl Endpoint {
         (ch, conn)
     }
 
-    /// Unconditionally reject future incoming connections
+    /// Unconditionally reject future incoming associations
     pub fn reject_new_connections(&mut self) {
         self.reject_new_connections = true;
     }
@@ -299,17 +299,17 @@ impl Endpoint {
 #[derive(Debug)]
 pub(crate) struct AssociationMeta {
     init_cid: AssociationId,
-    /// Number of local connection IDs that have been issued in NEW_CONNECTION_ID frames.
+    /// Number of local association IDs.
     cids_issued: u64,
     loc_cids: FxHashMap<u64, AssociationId>,
-    /// Remote address the connection began with
+    /// Remote address the association began with
     ///
-    /// Only needed to support connections with zero-length CIDs, which cannot migrate, so we don't
+    /// Only needed to support associations with zero-length AIDs, which cannot migrate, so we don't
     /// bother keeping it up to date.
     initial_remote: SocketAddr,
 }
 
-/// Internal identifier for a `Connection` currently associated with an endpoint
+/// Internal identifier for an `Association` currently associated with an endpoint
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub struct AssociationHandle(pub usize);
 
