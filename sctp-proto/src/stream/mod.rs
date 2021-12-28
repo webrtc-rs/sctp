@@ -12,6 +12,9 @@ use bytes::Bytes;
 use std::fmt;
 use tracing::{debug, error, trace};
 
+/// Identifier for a stream within a particular connection
+pub type StreamId = u16;
+
 /// Application events about streams
 #[derive(Debug, PartialEq, Eq)]
 pub enum StreamEvent {
@@ -88,7 +91,7 @@ impl From<u8> for ReliabilityType {
 /// Stream represents an SCTP stream
 pub struct Stream<'a> {
     //TODO: pub(crate) on_buffered_amount_low: Mutex<Option<OnBufferedAmountLowFn>>,
-    pub(crate) stream_identifier: u16,
+    pub(crate) stream_identifier: StreamId,
     pub(crate) association: &'a mut Association,
 }
 
@@ -196,7 +199,7 @@ impl<'a> std::ops::DerefMut for Stream<'a> {
 pub struct StreamState {
     pub(crate) side: Side,
     pub(crate) max_payload_size: u32,
-    pub(crate) stream_identifier: u16,
+    pub(crate) stream_identifier: StreamId,
     pub(crate) default_payload_type: PayloadProtocolIdentifier,
     pub(crate) reassembly_queue: ReassemblyQueue,
     pub(crate) sequence_number: u16,
@@ -210,7 +213,7 @@ pub struct StreamState {
 impl StreamState {
     pub(crate) fn new(
         side: Side,
-        stream_identifier: u16,
+        stream_identifier: StreamId,
         max_payload_size: u32,
         default_payload_type: PayloadProtocolIdentifier,
     ) -> Self {
@@ -231,7 +234,7 @@ impl StreamState {
     }
 
     /// stream_identifier returns the Stream identifier associated to the stream.
-    pub fn stream_identifier(&self) -> u16 {
+    pub fn stream_identifier(&self) -> StreamId {
         self.stream_identifier
     }
 

@@ -25,7 +25,7 @@ use std::{
 };
 
 mod association;
-pub use crate::association::{Association, ConnectionError, Event};
+pub use crate::association::{stats::AssociationStats, Association, AssociationError, Event};
 
 pub(crate) mod chunk;
 pub use crate::chunk::{
@@ -48,10 +48,13 @@ mod shared;
 pub use crate::shared::{AssociationEvent, AssociationId, EcnCodepoint, EndpointEvent};
 
 mod stream;
-pub use crate::stream::{ReliabilityType, Stream, StreamEvent, StreamState};
+pub use crate::stream::{ReliabilityType, Stream, StreamEvent, StreamId, StreamState};
 
 pub(crate) mod param;
+
 pub(crate) mod queue;
+pub use crate::queue::reassembly_queue::Chunks;
+
 pub(crate) mod util;
 
 /// Whether an endpoint was the initiator of an association

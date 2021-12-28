@@ -28,7 +28,7 @@ use crate::param::{
 };
 use crate::queue::{payload_queue::PayloadQueue, pending_queue::PendingQueue};
 use crate::shared::{AssociationId, EndpointEvent, EndpointEventInner};
-use crate::stream::{ReliabilityType, Stream, StreamEvent, StreamState};
+use crate::stream::{ReliabilityType, Stream, StreamEvent, StreamId, StreamState};
 use crate::util::{sna16lt, sna32gt, sna32gte, sna32lt, sna32lte};
 use crate::{Payload, Side, Transmit};
 use timer::{RtoManager, Timer, TimerTable, ACK_INTERVAL};
@@ -45,15 +45,15 @@ use thiserror::Error;
 use tracing::{debug, error, trace, warn};
 
 pub(crate) mod state;
-mod stats;
+pub(crate) mod stats;
 mod timer;
 
 #[cfg(test)]
 mod association_test;
 
 /// Reasons why an association might be lost
-#[derive(Debug, Error, PartialEq)]
-pub enum ConnectionError {
+#[derive(Debug, Error, Eq, Clone, PartialEq)]
+pub enum AssociationError {
     /// Handshake failed
     #[error("{0}")]
     HandshakeFailed(#[from] Error),
@@ -90,7 +90,7 @@ pub enum Event {
     /// Emitted if the peer closes the association or an error is encountered.
     ConnectionLost {
         /// Reason that the association was closed
-        reason: ConnectionError,
+        reason: AssociationError,
     },
     /// Stream events
     Stream(StreamEvent),
@@ -184,11 +184,11 @@ pub struct Association {
     // Chunks stored for retransmission
     stored_init: Option<ChunkInit>,
     stored_cookie_echo: Option<ChunkCookieEcho>,
-    pub(crate) streams: FxHashMap<u16, StreamState>,
+    pub(crate) streams: FxHashMap<StreamId, StreamState>,
 
     events: VecDeque<Event>,
     endpoint_events: VecDeque<EndpointEventInner>,
-    error: Option<ConnectionError>,
+    error: Option<AssociationError>,
 
     // per inbound packet context
     delayed_ack_triggered: bool,
@@ -619,7 +619,7 @@ impl Association {
     /// open_stream opens a stream
     pub(crate) fn open_stream(
         &mut self,
-        stream_identifier: u16,
+        stream_identifier: StreamId,
         default_payload_type: PayloadProtocolIdentifier,
     ) -> Result<Stream<'_>> {
         if self.streams.contains_key(&stream_identifier) {
@@ -644,7 +644,7 @@ impl Association {
     }
 
     /// stream returns a stream
-    pub(crate) fn stream(&mut self, stream_identifier: u16) -> Result<Stream<'_>> {
+    pub(crate) fn stream(&mut self, stream_identifier: StreamId) -> Result<Stream<'_>> {
         if !self.streams.contains_key(&stream_identifier) {
             Err(Error::ErrStreamNotExisted)
         } else {
@@ -677,7 +677,7 @@ impl Association {
 
     /// unregister_stream un-registers a stream from the association
     /// The caller should hold the association write lock.
-    fn unregister_stream(&mut self, stream_identifier: u16) {
+    fn unregister_stream(&mut self, stream_identifier: StreamId) {
         if let Some(mut s) = self.streams.remove(&stream_identifier) {
             s.closed = true;
         }
@@ -1858,7 +1858,7 @@ impl Association {
     /// create_stream creates a stream. The caller should hold the lock and check no stream exists for this id.
     fn create_stream(
         &mut self,
-        stream_identifier: u16,
+        stream_identifier: StreamId,
         accept: bool,
         default_payload_type: PayloadProtocolIdentifier,
     ) -> Option<Stream<'_>> {
@@ -1882,7 +1882,7 @@ impl Association {
     }
 
     /// get_or_create_stream gets or creates a stream. The caller should hold the lock.
-    fn get_or_create_stream(&mut self, stream_identifier: u16) -> Option<Stream<'_>> {
+    fn get_or_create_stream(&mut self, stream_identifier: StreamId) -> Option<Stream<'_>> {
         if self.streams.contains_key(&stream_identifier) {
             Some(Stream {
                 stream_identifier,
@@ -2567,7 +2567,7 @@ impl Association {
         }
     }
 
-    pub(crate) fn send_reset_request(&mut self, stream_identifier: u16) -> Result<()> {
+    pub(crate) fn send_reset_request(&mut self, stream_identifier: StreamId) -> Result<()> {
         let state = self.state();
         if state != AssociationState::Established {
             return Err(Error::ErrResetPacketInStateNotExist);
@@ -2748,12 +2748,14 @@ impl Association {
         match id {
             Timer::T1Init => {
                 error!("[{}] retransmission failure: T1-init", self.side);
-                self.error = Some(ConnectionError::HandshakeFailed(Error::ErrHandshakeInitAck));
+                self.error = Some(AssociationError::HandshakeFailed(
+                    Error::ErrHandshakeInitAck,
+                ));
             }
 
             Timer::T1Cookie => {
                 error!("[{}] retransmission failure: T1-cookie", self.side);
-                self.error = Some(ConnectionError::HandshakeFailed(
+                self.error = Some(AssociationError::HandshakeFailed(
                     Error::ErrHandshakeCookieEcho,
                 ));
             }

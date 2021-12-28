@@ -2,6 +2,7 @@ use crate::chunk::chunk_payload_data::{ChunkPayloadData, PayloadProtocolIdentifi
 use crate::error::{Error, Result};
 use crate::util::*;
 
+use crate::StreamId;
 use std::cmp::Ordering;
 
 fn sort_chunks_by_tsn(c: &mut Vec<ChunkPayloadData>) {
@@ -141,7 +142,7 @@ impl Chunks {
 
 #[derive(Default, Debug)]
 pub(crate) struct ReassemblyQueue {
-    pub(crate) si: u16,
+    pub(crate) si: StreamId,
     pub(crate) next_ssn: u16,
     /// expected SSN for next ordered chunk
     pub(crate) ordered: Vec<Chunks>,
@@ -156,7 +157,7 @@ impl ReassemblyQueue {
     ///   the association is Established.  Also, when the Stream Sequence
     ///   Number reaches the value 65535 the next Stream Sequence Number MUST
     ///   be set to 0.
-    pub(crate) fn new(si: u16) -> Self {
+    pub(crate) fn new(si: StreamId) -> Self {
         ReassemblyQueue {
             si,
             next_ssn: 0, // From RFC 4960 Sec 6.5:

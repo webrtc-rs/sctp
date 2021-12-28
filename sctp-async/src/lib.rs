@@ -12,8 +12,11 @@
 #![warn(rust_2018_idioms)]
 #![allow(dead_code)]
 
+mod association;
 mod broadcast;
+mod endpoint;
 mod mutex;
+mod stream;
 mod work_limiter;
 
 use std::time::Duration;
