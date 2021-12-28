@@ -45,7 +45,7 @@ pub(crate) trait Chunk: fmt::Display + fmt::Debug {
 
 /// ErrorCauseCode is a cause code that appears in either a ERROR or ABORT chunk
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
-pub(crate) struct ErrorCauseCode(pub(crate) u16);
+pub struct ErrorCauseCode(pub(crate) u16);
 
 pub(crate) const INVALID_STREAM_IDENTIFIER: ErrorCauseCode = ErrorCauseCode(1);
 pub(crate) const MISSING_MANDATORY_PARAMETER: ErrorCauseCode = ErrorCauseCode(2);

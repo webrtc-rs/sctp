@@ -28,7 +28,10 @@ mod association;
 pub use crate::association::{Association, ConnectionError, Event};
 
 pub(crate) mod chunk;
-pub use crate::chunk::chunk_payload_data::{ChunkPayloadData, PayloadProtocolIdentifier};
+pub use crate::chunk::{
+    chunk_payload_data::{ChunkPayloadData, PayloadProtocolIdentifier},
+    ErrorCauseCode,
+};
 
 mod config;
 pub use crate::config::{ClientConfig, EndpointConfig, ServerConfig, TransportConfig};
