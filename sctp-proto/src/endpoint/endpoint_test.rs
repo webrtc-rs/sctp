@@ -150,11 +150,7 @@ impl TestEndpoint {
 
             for (_, mut events) in self.conn_events.drain() {
                 for event in events.drain(..) {
-                    match event.0 {
-                        AssociationEventInner::Datagram(transmit) => {
-                            conn.handle_transmit(transmit);
-                        }
-                    }
+                    conn.handle_event(event);
                 }
             }
 
@@ -169,7 +165,11 @@ impl TestEndpoint {
         }
 
         for (ch, event) in endpoint_events {
-            self.handle_event(ch, event);
+            if let Some(event) = self.handle_event(ch, event) {
+                if let Some(conn) = self.connections.get_mut(&ch) {
+                    conn.handle_event(event);
+                }
+            }
         }
     }
 
@@ -2199,13 +2199,15 @@ fn test_association_handle_packet_before_init() -> Result<()> {
         let mut a = Association::new(None, config, 0, remote, None, Instant::now());
 
         let packet = packet.marshal()?;
-        a.handle_transmit(Transmit {
-            now: Instant::now(),
-            remote,
-            ecn: None,
-            local_ip: None,
-            payload: Payload::RawEncode(vec![packet]),
-        });
+        a.handle_event(AssociationEvent(AssociationEventInner::Datagram(
+            Transmit {
+                now: Instant::now(),
+                remote,
+                ecn: None,
+                local_ip: None,
+                payload: Payload::RawEncode(vec![packet]),
+            },
+        )));
 
         a.close()?;
     }

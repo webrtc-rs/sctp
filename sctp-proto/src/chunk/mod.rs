@@ -86,6 +86,12 @@ impl fmt::Display for ErrorCauseCode {
     }
 }
 
+impl From<u16> for ErrorCauseCode {
+    fn from(v: u16) -> Self {
+        ErrorCauseCode(v)
+    }
+}
+
 /// ErrorCauseHeader represents the shared header that is shared by all error causes
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ErrorCause {

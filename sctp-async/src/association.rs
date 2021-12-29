@@ -1,22 +1,24 @@
 use std::{
-    //any::Any,
+    any::Any,
     fmt,
-    //future::Future,
-    //mem,
-    //net::{IpAddr, SocketAddr},
+    future::Future,
+    mem,
+    net::{IpAddr, SocketAddr},
     pin::Pin,
     sync::Arc,
-    task::Waker, //task::{Context, Poll, Waker},
-                 //time::{Duration, Instant},
+    task::{Context, Poll, Waker},
+    time::{Duration, Instant},
 };
 
-//use bytes::Bytes;
+use bytes::Bytes;
 use futures_channel::{mpsc, oneshot};
-//use futures_util::{FutureExt, StreamExt};
+use futures_util::{FutureExt, StreamExt};
 use fxhash::FxHashMap;
-use proto::{AssociationError, AssociationHandle, /*AssociationStats, StreamEvent,*/ StreamId,};
+use proto::{
+    AssociationError, AssociationHandle, AssociationStats, ErrorCauseCode, StreamEvent, StreamId,
+};
 use thiserror::Error;
-use tokio::time::{/*sleep_until,*/ Instant as TokioInstant, Sleep};
+use tokio::time::{sleep_until, Instant as TokioInstant, Sleep};
 //use tracing::info_span;
 //use udp::UdpState;
 
@@ -661,10 +663,8 @@ pub struct AssociationInner {
     endpoint_events: mpsc::UnboundedSender<(AssociationHandle, EndpointEvent)>,
     pub(crate) blocked_writers: FxHashMap<StreamId, Waker>,
     pub(crate) blocked_readers: FxHashMap<StreamId, Waker>,
-    uni_opening: Broadcast,
-    bi_opening: Broadcast,
-    incoming_uni_streams_reader: Option<Waker>,
-    incoming_bi_streams_reader: Option<Waker>,
+    opening: Broadcast,
+    incoming_streams_reader: Option<Waker>,
     datagram_reader: Option<Waker>,
     pub(crate) finishing: FxHashMap<StreamId, oneshot::Sender<Option<WriteError>>>,
     pub(crate) stopped: FxHashMap<StreamId, Waker>,
@@ -674,18 +674,18 @@ pub struct AssociationInner {
     ref_count: usize,
     //TODO: udp_state: Arc<UdpState>,
 }
-/*
+
 impl AssociationInner {
     fn drive_transmit(&mut self) -> bool {
         let now = Instant::now();
         let mut transmits = 0;
 
-        let max_datagrams = self.udp_state.max_gso_segments();
+        //TODO: let max_datagrams = self.udp_state.max_gso_segments();
 
-        while let Some(t) = self.inner.poll_transmit(now, max_datagrams) {
-            transmits += match t.segment_size {
-                None => 1,
-                Some(s) => (t.contents.len() + s - 1) / s, // round up
+        while let Some(t) = self.inner.poll_transmit(now /*, max_datagrams*/) {
+            transmits += match &t.payload {
+                proto::Payload::RawEncode(s) => s.len(),
+                _ => 0,
             };
             // If the endpoint driver is gone, noop.
             let _ = self
@@ -705,7 +705,7 @@ impl AssociationInner {
     }
 
     fn forward_endpoint_events(&mut self) {
-        while let Some(event) = self.inner.poll_endpoint_events() {
+        while let Some(event) = self.inner.poll_endpoint_event() {
             // If the endpoint driver is gone, noop.
             let _ = self
                 .endpoint_events
@@ -714,12 +714,9 @@ impl AssociationInner {
     }
 
     /// If this returns `Err`, the endpoint is dead, so the driver should exit immediately.
-    fn process_conn_events(&mut self, cx: &mut Context) -> Result<(), ConnectionError> {
+    fn process_conn_events(&mut self, cx: &mut Context<'_>) -> Result<(), AssociationError> {
         loop {
             match self.conn_events.poll_next_unpin(cx) {
-                Poll::Ready(Some(AssociationEvent::Ping)) => {
-                    self.inner.ping();
-                }
                 Poll::Ready(Some(AssociationEvent::Proto(event))) => {
                     self.inner.handle_event(event);
                 }
@@ -727,11 +724,7 @@ impl AssociationInner {
                     self.close(error_code, reason);
                 }
                 Poll::Ready(None) => {
-                    return Err(ConnectionError::TransportError(proto::TransportError {
-                        code: proto::TransportErrorCode::INTERNAL_ERROR,
-                        frame: None,
-                        reason: "endpoint driver future was dropped".to_string(),
-                    }));
+                    return Err(AssociationError::TransportError);
                 }
                 Poll::Pending => {
                     return Ok(());
@@ -740,6 +733,7 @@ impl AssociationInner {
         }
     }
 
+    /*TODO:
     fn forward_app_events(&mut self) {
         while let Some(event) = self.inner.poll() {
             use proto::Event::*;
@@ -753,7 +747,7 @@ impl AssociationInner {
                     self.connected = true;
                     if let Some(x) = self.on_connected.take() {
                         // We don't care if the on-connected future was dropped
-                        let _ = x.send(self.inner.accepted_0rtt());
+                        let _ = x.send(false /*TODO:self.inner.accepted_0rtt()*/);
                     }
                 }
                 ConnectionLost { reason } => {
@@ -764,13 +758,8 @@ impl AssociationInner {
                         writer.wake();
                     }
                 }
-                Stream(StreamEvent::Opened { dir: Dir::Uni }) => {
-                    if let Some(x) = self.incoming_uni_streams_reader.take() {
-                        x.wake();
-                    }
-                }
-                Stream(StreamEvent::Opened { dir: Dir::Bi }) => {
-                    if let Some(x) = self.incoming_bi_streams_reader.take() {
+                Stream(StreamEvent::Opened) => {
+                    if let Some(x) = self.incoming_streams_reader.take() {
                         x.wake();
                     }
                 }
@@ -784,11 +773,8 @@ impl AssociationInner {
                         reader.wake();
                     }
                 }
-                Stream(StreamEvent::Available { dir }) => {
-                    let tasks = match dir {
-                        Dir::Uni => &mut self.uni_opening,
-                        Dir::Bi => &mut self.bi_opening,
-                    };
+                Stream(StreamEvent::Available) => {
+                    let tasks = &mut self.opening;
                     tasks.wake();
                 }
                 Stream(StreamEvent::Finished { id }) => {
@@ -802,7 +788,7 @@ impl AssociationInner {
                         stopped.wake();
                     }
                     if let Some(finishing) = self.finishing.remove(&id) {
-                        let _ = finishing.send(Some(WriteError::Stopped(error_code)));
+                        let _ = finishing.send(Some(WriteError::Stopped(error_code.into())));
                     }
                     if let Some(writer) = self.blocked_writers.remove(&id) {
                         writer.wake();
@@ -810,9 +796,9 @@ impl AssociationInner {
                 }
             }
         }
-    }
+    }*/
 
-    fn drive_timer(&mut self, cx: &mut Context) -> bool {
+    fn drive_timer(&mut self, cx: &mut Context<'_>) -> bool {
         // Check whether we need to (re)set the timer. If so, we must poll again to ensure the
         // timer is registered with the runtime (and check whether it's already
         // expired).
@@ -870,7 +856,7 @@ impl AssociationInner {
     }
 
     /// Used to wake up all blocked futures when the connection becomes closed for any reason
-    fn terminate(&mut self, reason: ConnectionError) {
+    fn terminate(&mut self, reason: AssociationError) {
         self.error = Some(reason.clone());
         if let Some(x) = self.on_handshake_data.take() {
             let _ = x.send(());
@@ -881,12 +867,8 @@ impl AssociationInner {
         for (_, reader) in self.blocked_readers.drain() {
             reader.wake()
         }
-        self.uni_opening.wake();
-        self.bi_opening.wake();
-        if let Some(x) = self.incoming_uni_streams_reader.take() {
-            x.wake();
-        }
-        if let Some(x) = self.incoming_bi_streams_reader.take() {
+        self.opening.wake();
+        if let Some(x) = self.incoming_streams_reader.take() {
             x.wake();
         }
         if let Some(x) = self.datagram_reader.take() {
@@ -903,30 +885,18 @@ impl AssociationInner {
         }
     }
 
-    fn close(&mut self, error_code: VarInt, reason: Bytes) {
-        self.inner.close(Instant::now(), error_code, reason);
-        self.terminate(ConnectionError::LocallyClosed);
+    fn close(&mut self, _error_code: ErrorCauseCode, _reason: Bytes) {
+        let _ = self.inner.close(); //TODO: Instant::now(), error_code, reason);
+        self.terminate(AssociationError::LocallyClosed);
         self.wake();
     }
 
     /// Close for a reason other than the application's explicit request
     pub fn implicit_close(&mut self) {
-        self.close(0u32.into(), Bytes::new());
-    }
-
-    pub(crate) fn check_0rtt(&self) -> Result<(), ()> {
-        if self.inner.is_handshaking()
-            || self.inner.accepted_0rtt()
-            || self.inner.side().is_server()
-        {
-            Ok(())
-        } else {
-            Err(())
-        }
+        self.close(0u16.into(), Bytes::new());
     }
 }
 
-*/
 impl Drop for AssociationInner {
     fn drop(&mut self) {
         if !self.inner.is_drained() {

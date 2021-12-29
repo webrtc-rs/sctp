@@ -27,10 +27,10 @@ use crate::param::{
     Param,
 };
 use crate::queue::{payload_queue::PayloadQueue, pending_queue::PendingQueue};
-use crate::shared::{AssociationId, EndpointEvent, EndpointEventInner};
+use crate::shared::{AssociationEventInner, AssociationId, EndpointEvent, EndpointEventInner};
 use crate::stream::{ReliabilityType, Stream, StreamEvent, StreamId, StreamState};
 use crate::util::{sna16lt, sna32gt, sna32gte, sna32lt, sna32lte};
-use crate::{Payload, Side, Transmit};
+use crate::{AssociationEvent, Payload, Side, Transmit};
 use timer::{RtoManager, Timer, TimerTable, ACK_INTERVAL};
 
 use bytes::Bytes;
@@ -461,31 +461,35 @@ impl Association {
     /// Will execute protocol logic upon receipt of an association event, in turn preparing signals
     /// (including application `Event`s, `EndpointEvent`s and outgoing datagrams) that should be
     /// extracted through the relevant methods.
-    pub fn handle_transmit(&mut self, transmit: Transmit) {
-        // If this packet could initiate a migration and we're a client or a server that
-        // forbids migration, drop the datagram. This could be relaxed to heuristically
-        // permit NAT-rebinding-like migration.
-        /*TODO:if remote != self.remote && self.server_config.as_ref().map_or(true, |x| !x.migration)
-        {
-            trace!("discarding packet from unrecognized peer {}", remote);
-            return;
-        }*/
-
-        if let Payload::PartialDecode(partial_decode) = transmit.payload {
-            let pkt = match partial_decode.finish() {
-                Ok(p) => p,
-                Err(err) => {
-                    warn!("[{}] unable to parse SCTP packet {}", self.side, err);
+    pub fn handle_event(&mut self, event: AssociationEvent) {
+        match event.0 {
+            AssociationEventInner::Datagram(transmit) => {
+                // If this packet could initiate a migration and we're a client or a server that
+                // forbids migration, drop the datagram. This could be relaxed to heuristically
+                // permit NAT-rebinding-like migration.
+                /*TODO:if remote != self.remote && self.server_config.as_ref().map_or(true, |x| !x.migration)
+                {
+                    trace!("discarding packet from unrecognized peer {}", remote);
                     return;
-                }
-            };
+                }*/
 
-            if let Err(err) = self.handle_inbound(pkt, transmit.now) {
-                error!("handle_inbound got err: {}", err);
-                let _ = self.close();
-            }
-        } else {
-            trace!("discarding invalid partial_decode");
+                if let Payload::PartialDecode(partial_decode) = transmit.payload {
+                    let pkt = match partial_decode.finish() {
+                        Ok(p) => p,
+                        Err(err) => {
+                            warn!("[{}] unable to parse SCTP packet {}", self.side, err);
+                            return;
+                        }
+                    };
+
+                    if let Err(err) = self.handle_inbound(pkt, transmit.now) {
+                        error!("handle_inbound got err: {}", err);
+                        let _ = self.close();
+                    }
+                } else {
+                    trace!("discarding invalid partial_decode");
+                }
+            } //TODO:
         }
     }
 

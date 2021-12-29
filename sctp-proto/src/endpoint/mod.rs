@@ -87,7 +87,11 @@ impl Endpoint {
     /// Process `EndpointEvent`s emitted from related `Association`s
     ///
     /// In turn, processing this event may return a `ConnectionEvent` for the same `Association`.
-    pub fn handle_event(&mut self, ch: AssociationHandle, event: EndpointEvent) {
+    pub fn handle_event(
+        &mut self,
+        ch: AssociationHandle,
+        event: EndpointEvent,
+    ) -> Option<AssociationEvent> {
         match event.0 {
             EndpointEventInner::Drained => {
                 let conn = self.connections.remove(ch.0);
@@ -97,6 +101,7 @@ impl Endpoint {
                 }
             }
         }
+        None
     }
 
     /// Process an incoming UDP datagram
@@ -236,13 +241,15 @@ impl Endpoint {
             transport_config,
         );
 
-        conn.handle_transmit(Transmit {
-            now,
-            remote,
-            ecn,
-            payload: Payload::PartialDecode(partial_decode),
-            local_ip,
-        });
+        conn.handle_event(AssociationEvent(AssociationEventInner::Datagram(
+            Transmit {
+                now,
+                remote,
+                ecn,
+                payload: Payload::PartialDecode(partial_decode),
+                local_ip,
+            },
+        )));
 
         Some((ch, conn))
     }
