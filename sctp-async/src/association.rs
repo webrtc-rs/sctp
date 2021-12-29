@@ -1,5 +1,4 @@
 use std::{
-    any::Any,
     fmt,
     future::Future,
     mem,
@@ -15,25 +14,28 @@ use futures_channel::{mpsc, oneshot};
 use futures_util::{FutureExt, StreamExt};
 use fxhash::FxHashMap;
 use proto::{
-    AssociationError, AssociationHandle, AssociationStats, ErrorCauseCode, StreamEvent, StreamId,
+    AssociationError, AssociationHandle, AssociationStats, ErrorCauseCode,
+    PayloadProtocolIdentifier, StreamEvent, StreamId,
 };
 use thiserror::Error;
 use tokio::time::{sleep_until, Instant as TokioInstant, Sleep};
-//use tracing::info_span;
+use tracing::info_span;
 //use udp::UdpState;
 
 use crate::{
-    broadcast::Broadcast, mutex::Mutex, stream::WriteError, AssociationEvent, EndpointEvent,
+    broadcast::{self, Broadcast},
+    mutex::Mutex,
+    stream::{Stream, WriteError},
+    AssociationEvent, EndpointEvent,
 };
 
-/*
 /// In-progress connection attempt future
 #[derive(Debug)]
 #[must_use = "futures/streams/sinks do nothing unless you `.await` or poll them"]
 pub struct Connecting {
     conn: Option<AssociationRef>,
-    connected: oneshot::Receiver<bool>,
-    handshake_data_ready: Option<oneshot::Receiver<()>>,
+    connected: oneshot::Receiver<()>,
+    on_buffered_amount_low: Option<mpsc::UnboundedReceiver<StreamId>>,
 }
 
 impl Connecting {
@@ -42,18 +44,18 @@ impl Connecting {
         conn: proto::Association,
         endpoint_events: mpsc::UnboundedSender<(AssociationHandle, EndpointEvent)>,
         conn_events: mpsc::UnboundedReceiver<AssociationEvent>,
-        udp_state: Arc<UdpState>,
+        //udp_state: Arc<UdpState>,
     ) -> Connecting {
-        let (on_handshake_data_send, on_handshake_data_recv) = oneshot::channel();
+        let (on_buffered_amount_low_send, on_buffered_amount_low_recv) = mpsc::unbounded();
         let (on_connected_send, on_connected_recv) = oneshot::channel();
         let conn = AssociationRef::new(
             handle,
             conn,
             endpoint_events,
             conn_events,
-            on_handshake_data_send,
+            on_buffered_amount_low_send,
             on_connected_send,
-            udp_state,
+            //udp_state,
         );
 
         tokio::spawn(AssociationDriver(conn.clone()));
@@ -61,7 +63,7 @@ impl Connecting {
         Connecting {
             conn: Some(conn),
             connected: on_connected_recv,
-            handshake_data_ready: Some(on_handshake_data_recv),
+            on_buffered_amount_low: Some(on_buffered_amount_low_recv),
         }
     }
 
@@ -88,14 +90,14 @@ impl Connecting {
 }
 
 impl Future for Connecting {
-    type Output = Result<NewConnection, ConnectionError>;
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
+    type Output = Result<NewAssociation, AssociationError>;
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         self.connected.poll_unpin(cx).map(|_| {
             let conn = self.conn.take().unwrap();
             let inner = conn.lock("connecting");
             if inner.connected {
                 drop(inner);
-                Ok(NewConnection::new(conn))
+                Ok(NewAssociation::new(conn))
             } else {
                 Err(inner
                     .error
@@ -116,7 +118,7 @@ impl Connecting {
     }
 }
 
-/// Components of a newly established connection
+/// Components of a newly established association
 ///
 /// All fields of this struct, in addition to any other handles constructed later, must be dropped
 /// for a connection to be implicitly closed. If the `NewConnection` is stored in a long-lived
@@ -129,9 +131,9 @@ impl Connecting {
 #[cfg_attr(
     feature = "rustls",
     doc = "```rust
-# use quinn::NewConnection;
-# fn dummy(new_connection: NewConnection) {
-let NewConnection { connection, .. } = { new_connection };
+# use quinn::NewAssociation;
+# fn dummy(new_association: NewAssociation) {
+let NewAssociation { connection, .. } = { new_connection };
 # }
 ```"
 )]
@@ -141,30 +143,18 @@ let NewConnection { connection, .. } = { new_connection };
 /// [`Association::close()`]: crate::Association::close
 #[derive(Debug)]
 #[non_exhaustive]
-pub struct NewConnection {
-    /// Handle for interacting with the connection
+pub struct NewAssociation {
+    /// Handle for interacting with the association
     pub connection: Association,
-    /// Unidirectional streams initiated by the peer, in the order they were opened
-    ///
-    /// Note that data for separate streams may be delivered in any order. In other words, reading
-    /// from streams in the order they're opened is not optimal. See [`IncomingUniStreams`] for
-    /// details.
-    ///
-    /// [`IncomingUniStreams`]: crate::IncomingUniStreams
-    pub uni_streams: IncomingUniStreams,
     /// Bidirectional streams initiated by the peer, in the order they were opened
-    pub bi_streams: IncomingBiStreams,
-    /// Unordered, unreliable datagrams sent by the peer
-    pub datagrams: Datagrams,
+    pub bi_streams: IncomingStreams,
 }
 
-impl NewConnection {
+impl NewAssociation {
     fn new(conn: AssociationRef) -> Self {
         Self {
             connection: Association(conn.clone()),
-            uni_streams: IncomingUniStreams(conn.clone()),
-            bi_streams: IncomingBiStreams(conn.clone()),
-            datagrams: Datagrams(conn),
+            bi_streams: IncomingStreams(conn),
         }
     }
 }
@@ -187,7 +177,7 @@ impl Future for AssociationDriver {
     type Output = ();
 
     #[allow(unused_mut)] // MSRV
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let conn = &mut *self.0.lock("poll");
 
         let span = info_span!("drive", id = conn.handle.0);
@@ -234,27 +224,21 @@ impl Future for AssociationDriver {
 pub struct Association(AssociationRef);
 
 impl Association {
-    /// Initiate a new outgoing unidirectional stream.
-    ///
-    /// Streams are cheap and instantaneous to open unless blocked by flow control. As a
-    /// consequence, the peer won't be notified that a stream has been opened until the stream is
-    /// actually used.
-    pub fn open_uni(&self) -> OpenUni {
-        OpenUni {
-            conn: self.0.clone(),
-            state: broadcast::State::default(),
-        }
-    }
-
     /// Initiate a new outgoing bidirectional stream.
     ///
     /// Streams are cheap and instantaneous to open unless blocked by flow control. As a
     /// consequence, the peer won't be notified that a stream has been opened until the stream is
     /// actually used.
-    pub fn open_bi(&self) -> OpenBi {
+    pub fn open_bi(
+        &self,
+        stream_identifier: StreamId,
+        default_payload_type: PayloadProtocolIdentifier,
+    ) -> OpenBi {
         OpenBi {
             conn: self.0.clone(),
             state: broadcast::State::default(),
+            stream_identifier,
+            default_payload_type,
         }
     }
 
@@ -273,52 +257,9 @@ impl Association {
     /// [`ConnectionError::LocallyClosed`]: crate::ConnectionError::LocallyClosed
     /// [`finish`]: crate::SendStream::finish
     /// [`SendStream`]: crate::SendStream
-    pub fn close(&self, error_code: VarInt, reason: &[u8]) {
+    pub fn close(&self, error_code: ErrorCauseCode, reason: &[u8]) {
         let conn = &mut *self.0.lock("close");
         conn.close(error_code, Bytes::copy_from_slice(reason));
-    }
-
-    /// Transmit `data` as an unreliable, unordered application datagram
-    ///
-    /// Application datagrams are a low-level primitive. They may be lost or delivered out of order,
-    /// and `data` must both fit inside a single QUIC packet and be smaller than the maximum
-    /// dictated by the peer.
-    pub fn send_datagram(&self, data: Bytes) -> Result<(), SendDatagramError> {
-        let conn = &mut *self.0.lock("send_datagram");
-        if let Some(ref x) = conn.error {
-            return Err(SendDatagramError::ConnectionLost(x.clone()));
-        }
-        use proto::SendDatagramError::*;
-        match conn.inner.datagrams().send(data) {
-            Ok(()) => {
-                conn.wake();
-                Ok(())
-            }
-            Err(e) => Err(match e {
-                UnsupportedByPeer => SendDatagramError::UnsupportedByPeer,
-                Disabled => SendDatagramError::Disabled,
-                TooLarge => SendDatagramError::TooLarge,
-            }),
-        }
-    }
-
-    /// Compute the maximum size of datagrams that may be passed to [`send_datagram()`].
-    ///
-    /// Returns `None` if datagrams are unsupported by the peer or disabled locally.
-    ///
-    /// This may change over the lifetime of a connection according to variation in the path MTU
-    /// estimate. The peer can also enforce an arbitrarily small fixed limit, but if the peer's
-    /// limit is large this is guaranteed to be a little over a kilobyte at minimum.
-    ///
-    /// Not necessarily the maximum size of received datagrams.
-    ///
-    /// [`send_datagram()`]: Association::send_datagram
-    pub fn max_datagram_size(&self) -> Option<usize> {
-        self.0
-            .lock("max_datagram_size")
-            .inner
-            .datagrams()
-            .max_size()
     }
 
     /// The peer's UDP address
@@ -352,11 +293,12 @@ impl Association {
         self.0.lock("rtt").inner.rtt()
     }
 
-    /// Returns connection statistics
-    pub fn stats(&self) -> ConnectionStats {
+    /// Returns association statistics
+    pub fn stats(&self) -> AssociationStats {
         self.0.lock("stats").inner.stats()
     }
 
+    /*TODO:
     /// Current state of the congestion control algorithm, for debugging purposes
     pub fn congestion_state(&self) -> Box<dyn Controller> {
         self.0
@@ -364,35 +306,7 @@ impl Association {
             .inner
             .congestion_state()
             .clone_box()
-    }
-
-    /// Parameters negotiated during the handshake
-    ///
-    /// Guaranteed to return `Some` on fully established connections or after
-    /// [`Connecting::handshake_data()`] succeeds. See that method's documentations for details on
-    /// the returned value.
-    ///
-    /// [`Association::handshake_data()`]: crate::Connecting::handshake_data
-    pub fn handshake_data(&self) -> Option<Box<dyn Any>> {
-        self.0
-            .lock("handshake_data")
-            .inner
-            .crypto_session()
-            .handshake_data()
-    }
-
-    /// Cryptographic identity of the peer
-    ///
-    /// The dynamic type returned is determined by the configured
-    /// [`Session`](proto::crypto::Session). For the default `rustls` session, the return value can
-    /// be [`downcast`](Box::downcast) to a <code>Vec<[rustls::Certificate](rustls::Certificate)></code>
-    pub fn peer_identity(&self) -> Option<Box<dyn Any>> {
-        self.0
-            .lock("peer_identity")
-            .inner
-            .crypto_session()
-            .peer_identity()
-    }
+    }*/
 
     /// A stable identifier for this connection
     ///
@@ -400,33 +314,6 @@ impl Association {
     /// fixed for the lifetime of the connection.
     pub fn stable_id(&self) -> usize {
         self.0.stable_id()
-    }
-
-    // Update traffic keys spontaneously for testing purposes.
-    #[doc(hidden)]
-    pub fn force_key_update(&self) {
-        self.0.lock("force_key_update").inner.initiate_key_update()
-    }
-
-    /// Derive keying material from this connection's TLS session secrets.
-    ///
-    /// When both peers call this method with the same `label` and `context`
-    /// arguments and `output` buffers of equal length, they will get the
-    /// same sequence of bytes in `output`. These bytes are cryptographically
-    /// strong and pseudorandom, and are suitable for use as keying material.
-    ///
-    /// See [RFC5705](https://tools.ietf.org/html/rfc5705) for more information.
-    pub fn export_keying_material(
-        &self,
-        output: &mut [u8],
-        label: &[u8],
-        context: &[u8],
-    ) -> Result<(), proto::crypto::ExportKeyingMaterialError> {
-        self.0
-            .lock("export_keying_material")
-            .inner
-            .crypto_session()
-            .export_keying_material(output, label, context)
     }
 }
 
@@ -436,114 +323,30 @@ impl Clone for Association {
     }
 }
 
-/// A stream of unidirectional QUIC streams initiated by a remote peer.
+/// A stream of bidirectional SCTP streams initiated by a remote peer.
 ///
-/// Incoming streams are *always* opened in the same order that the peer created them, but data can
-/// be delivered to open streams in any order. This allows meaning to be assigned to the sequence in
-/// which streams are opened. For example, a file transfer protocol might designate the first stream
-/// the client opens as a "control" stream, using all others for exchanging file data.
-///
-/// Processing streams in the order they're opened will produce head-of-line blocking. For best
-/// performance, an application should be prepared to fully process later streams before any data is
-/// received on earlier streams.
+/// See `IncomingStreams` for information about incoming streams in general.
 #[derive(Debug)]
-pub struct IncomingUniStreams(AssociationRef);
+pub struct IncomingStreams(AssociationRef);
 
-impl futures_util::stream::Stream for IncomingUniStreams {
-    type Item = Result<RecvStream, ConnectionError>;
+impl futures_util::stream::Stream for IncomingStreams {
+    type Item = Result<Stream, AssociationError>;
 
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
-        let mut conn = self.0.lock("IncomingUniStreams::poll_next");
-        if let Some(x) = conn.inner.streams().accept(Dir::Uni) {
-            conn.wake(); // To send additional stream ID credit
-            mem::drop(conn); // Release the lock so clone can take it
-            Poll::Ready(Some(Ok(RecvStream::new(self.0.clone(), x, false))))
-        } else if let Some(ConnectionError::LocallyClosed) = conn.error {
-            Poll::Ready(None)
-        } else if let Some(ref e) = conn.error {
-            Poll::Ready(Some(Err(e.clone())))
-        } else {
-            conn.incoming_uni_streams_reader = Some(cx.waker().clone());
-            Poll::Pending
-        }
-    }
-}
-
-/// A stream of bidirectional QUIC streams initiated by a remote peer.
-///
-/// See `IncomingUniStreams` for information about incoming streams in general.
-#[derive(Debug)]
-pub struct IncomingBiStreams(AssociationRef);
-
-impl futures_util::stream::Stream for IncomingBiStreams {
-    type Item = Result<(SendStream, RecvStream), ConnectionError>;
-
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut conn = self.0.lock("IncomingBiStreams::poll_next");
-        if let Some(x) = conn.inner.streams().accept(Dir::Bi) {
-            let is_0rtt = conn.inner.is_handshaking();
+        if let Some(x) = conn.inner.accept_stream() {
+            let id = x.stream_identifier();
             conn.wake(); // To send additional stream ID credit
             mem::drop(conn); // Release the lock so clone can take it
-            Poll::Ready(Some(Ok((
-                SendStream::new(self.0.clone(), x, is_0rtt),
-                RecvStream::new(self.0.clone(), x, is_0rtt),
-            ))))
-        } else if let Some(ConnectionError::LocallyClosed) = conn.error {
+            Poll::Ready(Some(Ok(Stream::new(self.0.clone(), id))))
+        } else if let Some(AssociationError::LocallyClosed) = conn.error {
             Poll::Ready(None)
         } else if let Some(ref e) = conn.error {
             Poll::Ready(Some(Err(e.clone())))
         } else {
-            conn.incoming_bi_streams_reader = Some(cx.waker().clone());
+            conn.incoming_streams_reader = Some(cx.waker().clone());
             Poll::Pending
         }
-    }
-}
-
-/// Stream of unordered, unreliable datagrams sent by the peer
-#[derive(Debug)]
-pub struct Datagrams(AssociationRef);
-
-impl futures_util::stream::Stream for Datagrams {
-    type Item = Result<Bytes, ConnectionError>;
-
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
-        let mut conn = self.0.lock("Datagrams::poll_next");
-        if let Some(x) = conn.inner.datagrams().recv() {
-            Poll::Ready(Some(Ok(x)))
-        } else if let Some(ConnectionError::LocallyClosed) = conn.error {
-            Poll::Ready(None)
-        } else if let Some(ref e) = conn.error {
-            Poll::Ready(Some(Err(e.clone())))
-        } else {
-            conn.datagram_reader = Some(cx.waker().clone());
-            Poll::Pending
-        }
-    }
-}
-
-/// A future that will resolve into an opened outgoing unidirectional stream
-#[must_use = "futures/streams/sinks do nothing unless you `.await` or poll them"]
-pub struct OpenUni {
-    conn: AssociationRef,
-    state: broadcast::State,
-}
-
-impl Future for OpenUni {
-    type Output = Result<SendStream, ConnectionError>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
-        let this = self.get_mut();
-        let mut conn = this.conn.lock("OpenUni::next");
-        if let Some(ref e) = conn.error {
-            return Poll::Ready(Err(e.clone()));
-        }
-        if let Some(id) = conn.inner.streams().open(Dir::Uni) {
-            let is_0rtt = conn.inner.side().is_client() && conn.inner.is_handshaking();
-            drop(conn); // Release lock for clone
-            return Poll::Ready(Ok(SendStream::new(this.conn.clone(), id, is_0rtt)));
-        }
-        conn.uni_opening.register(cx, &mut this.state);
-        Poll::Pending
     }
 }
 
@@ -552,48 +355,50 @@ impl Future for OpenUni {
 pub struct OpenBi {
     conn: AssociationRef,
     state: broadcast::State,
+    stream_identifier: StreamId,
+    default_payload_type: PayloadProtocolIdentifier,
 }
 
 impl Future for OpenBi {
-    type Output = Result<(SendStream, RecvStream), ConnectionError>;
+    type Output = Result<Stream, AssociationError>;
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
         let mut conn = this.conn.lock("OpenBi::next");
         if let Some(ref e) = conn.error {
             return Poll::Ready(Err(e.clone()));
         }
-        if let Some(id) = conn.inner.streams().open(Dir::Bi) {
-            let is_0rtt = conn.inner.side().is_client() && conn.inner.is_handshaking();
+        if conn
+            .inner
+            .open_stream(this.stream_identifier, this.default_payload_type)
+            .is_ok()
+        {
             drop(conn); // Release lock for clone
-            return Poll::Ready(Ok((
-                SendStream::new(this.conn.clone(), id, is_0rtt),
-                RecvStream::new(this.conn.clone(), id, is_0rtt),
-            )));
+            return Poll::Ready(Ok(Stream::new(this.conn.clone(), this.stream_identifier)));
         }
-        conn.bi_opening.register(cx, &mut this.state);
+        conn.opening.register(cx, &mut this.state);
         Poll::Pending
     }
 }
-*/
+
 #[derive(Debug)]
 pub struct AssociationRef(Arc<Mutex<AssociationInner>>);
-/*
+
 impl AssociationRef {
     fn new(
         handle: AssociationHandle,
         conn: proto::Association,
         endpoint_events: mpsc::UnboundedSender<(AssociationHandle, EndpointEvent)>,
         conn_events: mpsc::UnboundedReceiver<AssociationEvent>,
-        on_handshake_data: oneshot::Sender<()>,
-        on_connected: oneshot::Sender<bool>,
-        udp_state: Arc<UdpState>,
+        on_buffered_amount_low: mpsc::UnboundedSender<StreamId>,
+        on_connected: oneshot::Sender<()>,
+        //udp_state: Arc<UdpState>,
     ) -> Self {
         Self(Arc::new(Mutex::new(AssociationInner {
             inner: conn,
             driver: None,
             handle,
-            on_handshake_data: Some(on_handshake_data),
+            on_buffered_amount_low: Some(on_buffered_amount_low),
             on_connected: Some(on_connected),
             connected: false,
             timer: None,
@@ -602,16 +407,14 @@ impl AssociationRef {
             endpoint_events,
             blocked_writers: FxHashMap::default(),
             blocked_readers: FxHashMap::default(),
-            uni_opening: Broadcast::new(),
-            bi_opening: Broadcast::new(),
-            incoming_uni_streams_reader: None,
-            incoming_bi_streams_reader: None,
+            opening: Broadcast::new(),
+            incoming_streams_reader: None,
             datagram_reader: None,
             finishing: FxHashMap::default(),
             stopped: FxHashMap::default(),
             error: None,
             ref_count: 0,
-            udp_state,
+            //udp_state,
         })))
     }
 
@@ -649,13 +452,13 @@ impl std::ops::Deref for AssociationRef {
         &self.0
     }
 }
-*/
+
 pub struct AssociationInner {
     pub(crate) inner: proto::Association,
     driver: Option<Waker>,
     handle: AssociationHandle,
-    on_handshake_data: Option<oneshot::Sender<()>>,
-    on_connected: Option<oneshot::Sender<bool>>,
+    on_buffered_amount_low: Option<mpsc::UnboundedSender<StreamId>>,
+    on_connected: Option<oneshot::Sender<()>>,
     connected: bool,
     timer: Option<Pin<Box<Sleep>>>,
     timer_deadline: Option<TokioInstant>,
@@ -733,21 +536,15 @@ impl AssociationInner {
         }
     }
 
-    /*TODO:
     fn forward_app_events(&mut self) {
         while let Some(event) = self.inner.poll() {
             use proto::Event::*;
             match event {
-                HandshakeDataReady => {
-                    if let Some(x) = self.on_handshake_data.take() {
-                        let _ = x.send(());
-                    }
-                }
                 Connected => {
                     self.connected = true;
                     if let Some(x) = self.on_connected.take() {
                         // We don't care if the on-connected future was dropped
-                        let _ = x.send(false /*TODO:self.inner.accepted_0rtt()*/);
+                        let _ = x.send(());
                     }
                 }
                 ConnectionLost { reason } => {
@@ -788,15 +585,20 @@ impl AssociationInner {
                         stopped.wake();
                     }
                     if let Some(finishing) = self.finishing.remove(&id) {
-                        let _ = finishing.send(Some(WriteError::Stopped(error_code.into())));
+                        let _ = finishing.send(Some(WriteError::Stopped(error_code)));
                     }
                     if let Some(writer) = self.blocked_writers.remove(&id) {
                         writer.wake();
                     }
                 }
+                Stream(StreamEvent::BufferedAmountLow { id }) => {
+                    if let Some(x) = &self.on_buffered_amount_low {
+                        let _ = x.unbounded_send(id);
+                    }
+                }
             }
         }
-    }*/
+    }
 
     fn drive_timer(&mut self, cx: &mut Context<'_>) -> bool {
         // Check whether we need to (re)set the timer. If so, we must poll again to ensure the
@@ -858,8 +660,8 @@ impl AssociationInner {
     /// Used to wake up all blocked futures when the connection becomes closed for any reason
     fn terminate(&mut self, reason: AssociationError) {
         self.error = Some(reason.clone());
-        if let Some(x) = self.on_handshake_data.take() {
-            let _ = x.send(());
+        if let Some(x) = self.on_buffered_amount_low.take() {
+            let _ = x.unbounded_send(StreamId::MAX);
         }
         for (_, writer) in self.blocked_writers.drain() {
             writer.wake()
@@ -878,7 +680,7 @@ impl AssociationInner {
             let _ = x.send(Some(WriteError::ConnectionLost(reason.clone())));
         }
         if let Some(x) = self.on_connected.take() {
-            let _ = x.send(false);
+            let _ = x.send(());
         }
         for (_, waker) in self.stopped.drain() {
             waker.wake();

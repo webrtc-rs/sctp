@@ -367,10 +367,10 @@ impl Association {
     /// Returns application-facing event
     ///
     /// Associations should be polled for events after:
-    /// - a call was made to `handle_transmit`
+    /// - a call was made to `handle_event`
     /// - a call was made to `handle_timeout`
     #[must_use]
-    pub fn poll_event(&mut self) -> Option<Event> {
+    pub fn poll(&mut self) -> Option<Event> {
         if let Some(x) = self.events.pop_front() {
             return Some(x);
         }
@@ -629,7 +629,7 @@ impl Association {
     }
 
     /// open_stream opens a stream
-    pub(crate) fn open_stream(
+    pub fn open_stream(
         &mut self,
         stream_identifier: StreamId,
         default_payload_type: PayloadProtocolIdentifier,
@@ -646,7 +646,7 @@ impl Association {
     }
 
     /// accept_stream accepts a stream
-    pub(crate) fn accept_stream(&mut self) -> Option<Stream<'_>> {
+    pub fn accept_stream(&mut self) -> Option<Stream<'_>> {
         self.stream_queue
             .pop_front()
             .map(move |stream_identifier| Stream {

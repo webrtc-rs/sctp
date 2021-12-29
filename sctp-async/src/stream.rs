@@ -18,17 +18,16 @@ pub struct Stream {
     finishing: Option<oneshot::Receiver<Option<WriteError>>>,
 }
 
-/*
-impl SendStream {
-    pub(crate) fn new(conn: ConnectionRef, stream: StreamId, is_0rtt: bool) -> Self {
+impl Stream {
+    pub(crate) fn new(conn: AssociationRef, stream: StreamId) -> Self {
         Self {
             conn,
             stream,
-            is_0rtt,
+            all_data_read: false,
             finishing: None,
         }
     }
-
+    /*
     /// Write bytes to the stream
     ///
     /// Yields the number of bytes written on success. Congestion and flow control may cause this to
@@ -212,9 +211,9 @@ impl SendStream {
     /// Get the identity of this stream
     pub fn id(&self) -> StreamId {
         self.stream
-    }
+    }*/
 }
-
+/*
 impl AsyncWrite for SendStream {
     fn poll_write(self: Pin<&mut Self>, cx: &mut Context, buf: &[u8]) -> Poll<io::Result<usize>> {
         SendStream::execute_poll(self.get_mut(), cx, |stream| stream.write(buf)).map_err(Into::into)

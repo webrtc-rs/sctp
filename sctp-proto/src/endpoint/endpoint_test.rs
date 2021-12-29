@@ -340,12 +340,12 @@ impl Pair {
 
     fn finish_connect(&mut self, client_ch: AssociationHandle, server_ch: AssociationHandle) {
         assert_matches!(
-            self.client_conn_mut(client_ch).poll_event(),
+            self.client_conn_mut(client_ch).poll(),
             Some(Event::Connected { .. })
         );
 
         assert_matches!(
-            self.server_conn_mut(server_ch).poll_event(),
+            self.server_conn_mut(server_ch).poll(),
             Some(Event::Connected { .. })
         );
     }

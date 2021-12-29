@@ -6,7 +6,7 @@ use crate::association::Association;
 use crate::chunk::chunk_payload_data::{ChunkPayloadData, PayloadProtocolIdentifier};
 use crate::error::{Error, Result};
 use crate::queue::reassembly_queue::{Chunks, ReassemblyQueue};
-use crate::Side;
+use crate::{ErrorCauseCode, Side};
 
 use bytes::Bytes;
 use std::fmt;
@@ -23,29 +23,34 @@ pub enum StreamEvent {
     /// A currently open stream has data or errors waiting to be read
     Readable {
         /// Which stream is now readable
-        id: u16,
+        id: StreamId,
     },
     /// A formerly write-blocked stream might be ready for a write or have been stopped
     ///
     /// Only generated for streams that are currently open.
     Writable {
         /// Which stream is now writable
-        id: u16,
+        id: StreamId,
     },
     /// A finished stream has been fully acknowledged or stopped
     Finished {
         /// Which stream has been finished
-        id: u16,
+        id: StreamId,
     },
     /// The peer asked us to stop sending on an outgoing stream
     Stopped {
         /// Which stream has been stopped
-        id: u16,
+        id: StreamId,
         /// Error code supplied by the peer
-        error_code: u16,
+        error_code: ErrorCauseCode,
     },
     /// At least one new stream of a certain directionality may be opened
     Available,
+    /// The number of bytes of outgoing data buffered is lower than the threshold.
+    BufferedAmountLow {
+        /// Which stream is now readable
+        id: StreamId,
+    },
 }
 
 /// Reliability type for stream
@@ -86,11 +91,8 @@ impl From<u8> for ReliabilityType {
     }
 }
 
-//TODO: pub type OnBufferedAmountLowFn = Box<dyn (FnMut() -> Pin<Box<dyn Future<Output = ()> + Send + 'static>>) + Send + Sync>;
-
 /// Stream represents an SCTP stream
 pub struct Stream<'a> {
-    //TODO: pub(crate) on_buffered_amount_low: Mutex<Option<OnBufferedAmountLowFn>>,
     pub(crate) stream_identifier: StreamId,
     pub(crate) association: &'a mut Association,
 }
@@ -355,13 +357,6 @@ impl StreamState {
     pub fn set_buffered_amount_low_threshold(&mut self, th: usize) {
         self.buffered_amount_low = th;
     }
-
-    /*TODO:/// on_buffered_amount_low sets the callback handler which would be called when the number of
-    /// bytes of outgoing data buffered is lower than the threshold.
-    pub fn on_buffered_amount_low(&self, f: OnBufferedAmountLowFn) {
-        let mut on_buffered_amount_low = self.on_buffered_amount_low.lock().await;
-        *on_buffered_amount_low = Some(f);
-    }*/
 
     /// This method is called by association's read_loop (go-)routine to notify this stream
     /// of the specified amount of outgoing data has been delivered to the peer.
