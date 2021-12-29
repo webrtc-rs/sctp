@@ -12,14 +12,20 @@
 #![warn(rust_2018_idioms)]
 #![allow(dead_code)]
 
+use std::time::Duration;
+
 mod association;
 mod broadcast;
 mod endpoint;
 mod mutex;
 mod stream;
+mod udp;
 mod work_limiter;
 
-use std::time::Duration;
+pub use proto::{
+    AssociationError, ClientConfig, ConnectError, EndpointConfig, ErrorCauseCode, ServerConfig,
+    StreamId, Transmit, TransportConfig,
+};
 
 #[derive(Debug)]
 enum AssociationEvent {

@@ -1,4 +1,4 @@
-/*use std::{
+use std::{
     collections::VecDeque,
     future::Future,
     io,
@@ -6,30 +6,29 @@
     mem::MaybeUninit,
     net::{SocketAddr, SocketAddrV6},
     pin::Pin,
-    str,
     sync::{Arc, Mutex},
     task::{Context, Poll, Waker},
     time::Instant,
 };
 
-use bytes::Bytes;
+use crate::udp::{RecvMeta, UdpSocket, BATCH_SIZE};
+use crate::{
+    association::Connecting,
+    broadcast::{self, Broadcast},
+    work_limiter::WorkLimiter,
+    AssociationEvent, EndpointConfig, EndpointEvent, IO_LOOP_BOUND, RECV_TIME_BOUND,
+    SEND_TIME_BOUND,
+};
+use bytes::{Bytes, BytesMut};
 use futures_channel::mpsc;
 use futures_util::StreamExt;
 use fxhash::FxHashMap;
 use proto::{
-    self as proto, ClientConfig, ConnectError, ConnectionHandle, DatagramEvent, ServerConfig,
-};
-use udp::{RecvMeta, UdpSocket, UdpState, BATCH_SIZE};
-
-use crate::{
-    broadcast::{self, Broadcast},
-    connection::Connecting,
-    work_limiter::WorkLimiter,
-    ConnectionEvent, EndpointConfig, EndpointEvent, VarInt, IO_LOOP_BOUND, RECV_TIME_BOUND,
-    SEND_TIME_BOUND,
+    self as proto, AssociationHandle, ClientConfig, ConnectError, DatagramEvent, ErrorCauseCode,
+    ServerConfig,
 };
 
-/// A QUIC endpoint.
+/// A SCTP endpoint.
 ///
 /// An endpoint corresponds to a single UDP socket, may host many connections, and may act as both
 /// client and server for different connections.
@@ -106,21 +105,16 @@ impl Endpoint {
         self.default_client_config = Some(config);
     }
 
-    /// Connect to a remote endpoint
-    ///
-    /// `server_name` must be covered by the certificate presented by the server. This prevents a
-    /// connection from being intercepted by an attacker with a valid certificate for some other
-    /// server.
-    ///
+    /// Connect to a remote endpoint   
     /// May fail immediately due to configuration errors, or in the future if the connection could
     /// not be established.
-    pub fn connect(&self, addr: SocketAddr, server_name: &str) -> Result<Connecting, ConnectError> {
+    pub fn connect(&self, addr: SocketAddr) -> Result<Connecting, ConnectError> {
         let config = match &self.default_client_config {
             Some(config) => config.clone(),
             None => return Err(ConnectError::NoDefaultClientConfig),
         };
 
-        self.connect_with(config, addr, server_name)
+        self.connect_with(config, addr)
     }
 
     /// Connect to a remote endpoint using a custom configuration.
@@ -132,7 +126,6 @@ impl Endpoint {
         &self,
         config: ClientConfig,
         addr: SocketAddr,
-        server_name: &str,
     ) -> Result<Connecting, ConnectError> {
         let mut endpoint = self.inner.lock().unwrap();
         if endpoint.driver_lost {
@@ -146,31 +139,8 @@ impl Endpoint {
         } else {
             addr
         };
-        let (ch, conn) = endpoint.inner.connect(config, addr, server_name)?;
-        let udp_state = endpoint.udp_state.clone();
-        Ok(endpoint.connections.insert(ch, conn, udp_state))
-    }
-
-    /// Switch to a new UDP socket
-    ///
-    /// Allows the endpoint's address to be updated live, affecting all active connections. Incoming
-    /// connections and connections to servers unreachable from the new address will be lost.
-    ///
-    /// On error, the old UDP socket is retained.
-    pub fn rebind(&self, socket: std::net::UdpSocket) -> io::Result<()> {
-        let addr = socket.local_addr()?;
-        let socket = UdpSocket::from_std(socket)?;
-        let mut inner = self.inner.lock().unwrap();
-        inner.socket = socket;
-        inner.ipv6 = addr.is_ipv6();
-
-        // Generate some activity so peers notice the rebind
-        for sender in inner.connections.senders.values() {
-            // Ignoring errors from dropped connections
-            let _ = sender.unbounded_send(ConnectionEvent::Ping);
-        }
-
-        Ok(())
+        let (ch, conn) = endpoint.inner.connect(config, addr)?;
+        Ok(endpoint.connections.insert(ch, conn))
     }
 
     /// Replace the server configuration, affecting new incoming connections only
@@ -194,13 +164,13 @@ impl Endpoint {
     /// See [`Connection::close()`] for details.
     ///
     /// [`Connection::close()`]: crate::Connection::close
-    pub fn close(&self, error_code: VarInt, reason: &[u8]) {
+    pub fn close(&self, error_code: ErrorCauseCode, reason: &[u8]) {
         let reason = Bytes::copy_from_slice(reason);
         let mut endpoint = self.inner.lock().unwrap();
         endpoint.connections.close = Some((error_code, reason.clone()));
         for sender in endpoint.connections.senders.values() {
             // Ignoring errors from dropped connections
-            let _ = sender.unbounded_send(ConnectionEvent::Close {
+            let _ = sender.unbounded_send(AssociationEvent::Close {
                 error_code,
                 reason: reason.clone(),
             });
@@ -254,7 +224,7 @@ impl Future for EndpointDriver {
     type Output = Result<(), io::Error>;
 
     #[allow(unused_mut)] // MSRV
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut endpoint = self.0.lock().unwrap();
         if endpoint.driver.is_none() {
             endpoint.driver = Some(cx.waker().clone());
@@ -303,7 +273,7 @@ impl Drop for EndpointDriver {
 #[derive(Debug)]
 pub(crate) struct EndpointInner {
     socket: UdpSocket,
-    udp_state: Arc<UdpState>,
+    //udp_state: Arc<UdpState>,
     inner: proto::Endpoint,
     outgoing: VecDeque<proto::Transmit>,
     incoming: VecDeque<Connecting>,
@@ -311,7 +281,7 @@ pub(crate) struct EndpointInner {
     driver: Option<Waker>,
     ipv6: bool,
     connections: ConnectionSet,
-    events: mpsc::UnboundedReceiver<(ConnectionHandle, EndpointEvent)>,
+    events: mpsc::UnboundedReceiver<(AssociationHandle, EndpointEvent)>,
     /// Number of live handles that can be used to initiate or handle I/O; excludes the driver
     ref_count: usize,
     driver_lost: bool,
@@ -322,7 +292,7 @@ pub(crate) struct EndpointInner {
 }
 
 impl EndpointInner {
-    fn drive_recv<'a>(&'a mut self, cx: &mut Context, now: Instant) -> Result<bool, io::Error> {
+    fn drive_recv<'a>(&'a mut self, cx: &mut Context<'_>, now: Instant) -> Result<bool, io::Error> {
         self.recv_limiter.start_cycle();
         let mut metas = [RecvMeta::default(); BATCH_SIZE];
         let mut iovs = MaybeUninit::<[IoSliceMut<'a>; BATCH_SIZE]>::uninit();
@@ -331,7 +301,7 @@ impl EndpointInner {
             .enumerate()
             .for_each(|(i, buf)| unsafe {
                 iovs.as_mut_ptr()
-                    .cast::<IoSliceMut>()
+                    .cast::<IoSliceMut<'_>>()
                     .add(i)
                     .write(IoSliceMut::<'a>::new(buf));
             });
@@ -341,25 +311,26 @@ impl EndpointInner {
                 Poll::Ready(Ok(msgs)) => {
                     self.recv_limiter.record_work(msgs);
                     for (meta, buf) in metas.iter().zip(iovs.iter()).take(msgs) {
-                        let data = buf[0..meta.len].into();
-                        match self
-                            .inner
-                            .handle(now, meta.addr, meta.dst_ip, meta.ecn, data)
-                        {
-                            Some((handle, DatagramEvent::NewConnection(conn))) => {
-                                let conn =
-                                    self.connections
-                                        .insert(handle, conn, self.udp_state.clone());
+                        let data: BytesMut = buf[0..meta.len].into();
+                        match self.inner.handle(
+                            now,
+                            meta.addr,
+                            meta.dst_ip,
+                            meta.ecn,
+                            data.freeze(),
+                        ) {
+                            Some((handle, DatagramEvent::NewAssociation(conn))) => {
+                                let conn = self.connections.insert(handle, conn);
                                 self.incoming.push_back(conn);
                             }
-                            Some((handle, DatagramEvent::ConnectionEvent(event))) => {
+                            Some((handle, DatagramEvent::AssociationEvent(event))) => {
                                 // Ignoring errors from dropped connections that haven't yet been cleaned up
                                 let _ = self
                                     .connections
                                     .senders
                                     .get_mut(&handle)
                                     .unwrap()
-                                    .unbounded_send(ConnectionEvent::Proto(event));
+                                    .unbounded_send(AssociationEvent::Proto(event));
                             }
                             None => {}
                         }
@@ -387,7 +358,7 @@ impl EndpointInner {
         Ok(false)
     }
 
-    fn drive_send(&mut self, cx: &mut Context) -> Result<bool, io::Error> {
+    fn drive_send(&mut self, cx: &mut Context<'_>) -> Result<bool, io::Error> {
         self.send_limiter.start_cycle();
 
         let result = loop {
@@ -406,10 +377,7 @@ impl EndpointInner {
                 break Ok(true);
             }
 
-            match self
-                .socket
-                .poll_send(&self.udp_state, cx, self.outgoing.as_slices().0)
-            {
+            match self.socket.poll_send(cx, self.outgoing.as_slices().0) {
                 Poll::Ready(Ok(n)) => {
                     self.outgoing.drain(..n);
                     // We count transmits instead of `poll_send` calls since the cost
@@ -429,7 +397,7 @@ impl EndpointInner {
         result
     }
 
-    fn handle_events(&mut self, cx: &mut Context) -> bool {
+    fn handle_events(&mut self, cx: &mut Context<'_>) -> bool {
         use EndpointEvent::*;
 
         for _ in 0..IO_LOOP_BOUND {
@@ -449,7 +417,7 @@ impl EndpointInner {
                                 .senders
                                 .get_mut(&ch)
                                 .unwrap()
-                                .unbounded_send(ConnectionEvent::Proto(event));
+                                .unbounded_send(AssociationEvent::Proto(event));
                         }
                     }
                     Transmit(t) => self.outgoing.push_back(t),
@@ -468,30 +436,30 @@ impl EndpointInner {
 #[derive(Debug)]
 struct ConnectionSet {
     /// Senders for communicating with the endpoint's connections
-    senders: FxHashMap<ConnectionHandle, mpsc::UnboundedSender<ConnectionEvent>>,
+    senders: FxHashMap<AssociationHandle, mpsc::UnboundedSender<AssociationEvent>>,
     /// Stored to give out clones to new ConnectionInners
-    sender: mpsc::UnboundedSender<(ConnectionHandle, EndpointEvent)>,
+    sender: mpsc::UnboundedSender<(AssociationHandle, EndpointEvent)>,
     /// Set if the endpoint has been manually closed
-    close: Option<(VarInt, Bytes)>,
+    close: Option<(ErrorCauseCode, Bytes)>,
 }
 
 impl ConnectionSet {
     fn insert(
         &mut self,
-        handle: ConnectionHandle,
-        conn: proto::Connection,
-        udp_state: Arc<UdpState>,
+        handle: AssociationHandle,
+        conn: proto::Association,
+        //udp_state: Arc<UdpState>,
     ) -> Connecting {
         let (send, recv) = mpsc::unbounded();
         if let Some((error_code, ref reason)) = self.close {
-            send.unbounded_send(ConnectionEvent::Close {
+            send.unbounded_send(AssociationEvent::Close {
                 error_code,
                 reason: reason.clone(),
             })
             .unwrap();
         }
         self.senders.insert(handle, send);
-        Connecting::new(handle, conn, self.sender.clone(), recv, udp_state)
+        Connecting::new(handle, conn, self.sender.clone(), recv /*, udp_state*/)
     }
 
     fn is_empty(&self) -> bool {
@@ -520,7 +488,7 @@ impl futures_util::stream::Stream for Incoming {
     type Item = Connecting;
 
     #[allow(unused_mut)] // MSRV
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let endpoint = &mut *self.0.lock().unwrap();
         if endpoint.driver_lost {
             Poll::Ready(None)
@@ -549,11 +517,11 @@ pub(crate) struct EndpointRef(Arc<Mutex<EndpointInner>>);
 impl EndpointRef {
     pub(crate) fn new(socket: UdpSocket, inner: proto::Endpoint, ipv6: bool) -> Self {
         let recv_buf =
-            vec![0; inner.config().get_max_udp_payload_size().min(64 * 1024) as usize * BATCH_SIZE];
+            vec![0; inner.config().get_max_payload_size().min(64 * 1024) as usize * BATCH_SIZE];
         let (sender, events) = mpsc::unbounded();
         Self(Arc::new(Mutex::new(EndpointInner {
             socket,
-            udp_state: Arc::new(UdpState::new()),
+            //udp_state: Arc::new(UdpState::new()),
             inner,
             ipv6,
             events,
@@ -605,4 +573,3 @@ impl std::ops::Deref for EndpointRef {
         &self.0
     }
 }
-*/

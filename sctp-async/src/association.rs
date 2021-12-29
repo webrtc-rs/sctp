@@ -298,16 +298,6 @@ impl Association {
         self.0.lock("stats").inner.stats()
     }
 
-    /*TODO:
-    /// Current state of the congestion control algorithm, for debugging purposes
-    pub fn congestion_state(&self) -> Box<dyn Controller> {
-        self.0
-            .lock("congestion_state")
-            .inner
-            .congestion_state()
-            .clone_box()
-    }*/
-
     /// A stable identifier for this connection
     ///
     /// Peer addresses and connection IDs can change, but this value will remain
@@ -475,7 +465,6 @@ pub struct AssociationInner {
     pub(crate) error: Option<AssociationError>,
     /// Number of live handles that can be used to initiate or handle I/O; excludes the driver
     ref_count: usize,
-    //TODO: udp_state: Arc<UdpState>,
 }
 
 impl AssociationInner {
@@ -483,9 +472,7 @@ impl AssociationInner {
         let now = Instant::now();
         let mut transmits = 0;
 
-        //TODO: let max_datagrams = self.udp_state.max_gso_segments();
-
-        while let Some(t) = self.inner.poll_transmit(now /*, max_datagrams*/) {
+        while let Some(t) = self.inner.poll_transmit(now) {
             transmits += match &t.payload {
                 proto::Payload::RawEncode(s) => s.len(),
                 _ => 0,

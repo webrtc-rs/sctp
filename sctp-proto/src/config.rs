@@ -155,7 +155,7 @@ impl fmt::Debug for EndpointConfig {
 /// Parameters governing incoming associations
 ///
 /// Default values should be suitable for most internet applications.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct ServerConfig {
     /// Transport configuration to use for incoming associations
     pub transport: Arc<TransportConfig>,
@@ -183,7 +183,7 @@ impl ServerConfig {
 /// Configuration for outgoing associations
 ///
 /// Default values should be suitable for most internet applications.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct ClientConfig {
     /// Transport configuration to use
     pub transport: Arc<TransportConfig>,

@@ -3,12 +3,11 @@ mod endpoint_test;
 
 use std::{
     collections::{HashMap, VecDeque},
-    iter,
-    //fmt,
+    fmt, iter,
     net::{IpAddr, SocketAddr},
     ops::{Index, IndexMut},
     sync::Arc,
-    time::Instant, //, SystemTime},
+    time::Instant,
 };
 
 use crate::association::Association;
@@ -53,6 +52,21 @@ pub struct Endpoint {
     ///
     /// Equivalent to a `ServerConfig.accept_buffer` of `0`, but can be changed after the endpoint is constructed.
     reject_new_connections: bool,
+}
+
+impl fmt::Debug for Endpoint {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt.debug_struct("Endpoint<T>")
+            .field("rng", &self.rng)
+            .field("transmits", &self.transmits)
+            .field("connection_ids_initial", &self.connection_ids_init)
+            .field("connection_ids", &self.connection_ids)
+            .field("connections", &self.connections)
+            .field("config", &self.config)
+            .field("server_config", &self.server_config)
+            .field("reject_new_connections", &self.reject_new_connections)
+            .finish()
+    }
 }
 
 impl Endpoint {
