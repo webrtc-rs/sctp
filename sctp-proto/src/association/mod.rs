@@ -513,6 +513,14 @@ impl Association {
         self.state == AssociationState::Closed
     }
 
+    /// Whether there is no longer any need to keep the association around
+    ///
+    /// Closed associations become drained after a brief timeout to absorb any remaining in-flight
+    /// packets from the peer. All drained associations have been closed.
+    pub fn is_drained(&self) -> bool {
+        self.state.is_drained()
+    }
+
     /// Look up whether we're the client or server of this Association
     pub fn side(&self) -> Side {
         self.side

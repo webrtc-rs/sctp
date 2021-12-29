@@ -88,9 +88,8 @@ impl Endpoint {
     ///
     /// In turn, processing this event may return a `ConnectionEvent` for the same `Association`.
     pub fn handle_event(&mut self, ch: AssociationHandle, event: EndpointEvent) {
-        use EndpointEventInner::*;
         match event.0 {
-            Drained => {
+            EndpointEventInner::Drained => {
                 let conn = self.connections.remove(ch.0);
                 self.connection_ids_init.remove(&conn.init_cid);
                 for cid in conn.loc_cids.values() {

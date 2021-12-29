@@ -29,22 +29,22 @@ use crate::{
 #[derive(Debug)]
 #[must_use = "futures/streams/sinks do nothing unless you `.await` or poll them"]
 pub struct Connecting {
-    conn: Option<ConnectionRef>,
+    conn: Option<AssociationRef>,
     connected: oneshot::Receiver<bool>,
     handshake_data_ready: Option<oneshot::Receiver<()>>,
 }
 
 impl Connecting {
     pub(crate) fn new(
-        handle: ConnectionHandle,
+        handle: AssociationHandle,
         conn: proto::Association,
-        endpoint_events: mpsc::UnboundedSender<(ConnectionHandle, EndpointEvent)>,
-        conn_events: mpsc::UnboundedReceiver<ConnectionEvent>,
+        endpoint_events: mpsc::UnboundedSender<(AssociationHandle, EndpointEvent)>,
+        conn_events: mpsc::UnboundedReceiver<AssociationEvent>,
         udp_state: Arc<UdpState>,
     ) -> Connecting {
         let (on_handshake_data_send, on_handshake_data_recv) = oneshot::channel();
         let (on_connected_send, on_connected_recv) = oneshot::channel();
-        let conn = ConnectionRef::new(
+        let conn = AssociationRef::new(
             handle,
             conn,
             endpoint_events,
@@ -54,81 +54,13 @@ impl Connecting {
             udp_state,
         );
 
-        tokio::spawn(ConnectionDriver(conn.clone()));
+        tokio::spawn(AssociationDriver(conn.clone()));
 
         Connecting {
             conn: Some(conn),
             connected: on_connected_recv,
             handshake_data_ready: Some(on_handshake_data_recv),
         }
-    }
-
-    /// Convert into a 0-RTT or 0.5-RTT connection at the cost of weakened security
-    ///
-    /// Opens up the connection for use before the handshake finishes, allowing the API user to
-    /// send data with 0-RTT encryption if the necessary key material is available. This is useful
-    /// for reducing start-up latency by beginning transmission of application data without waiting
-    /// for the handshake's cryptographic security guarantees to be established.
-    ///
-    /// When the `ZeroRttAccepted` future completes, the connection has been fully established.
-    ///
-    /// # Security
-    ///
-    /// On outgoing connections, this enables transmission of 0-RTT data, which might be vulnerable
-    /// to replay attacks, and should therefore never invoke non-idempotent operations.
-    ///
-    /// On incoming connections, this enables transmission of 0.5-RTT data, which might be
-    /// intercepted by a man-in-the-middle. If this occurs, the handshake will not complete
-    /// successfully.
-    ///
-    /// # Errors
-    ///
-    /// Outgoing connections are only 0-RTT-capable when a cryptographic session ticket cached from
-    /// a previous connection to the same server is available, and includes a 0-RTT key. If no such
-    /// ticket is found, `self` is returned unmodified.
-    ///
-    /// For incoming connections, a 0.5-RTT connection will always be successfully constructed.
-    pub fn into_0rtt(mut self) -> Result<(NewConnection, ZeroRttAccepted), Self> {
-        // This lock borrows `self` and would normally be dropped at the end of this scope, so we'll
-        // have to release it explicitly before returning `self` by value.
-        let conn = (self.conn.as_mut().unwrap()).lock("into_0rtt");
-
-        let is_ok = conn.inner.has_0rtt() || conn.inner.side().is_server();
-        drop(conn);
-
-        if is_ok {
-            let conn = self.conn.take().unwrap();
-            Ok((NewConnection::new(conn), ZeroRttAccepted(self.connected)))
-        } else {
-            Err(self)
-        }
-    }
-
-    /// Parameters negotiated during the handshake
-    ///
-    /// The dynamic type returned is determined by the configured
-    /// [`Session`](proto::crypto::Session). For the default `rustls` session, the return value can
-    /// be [`downcast`](Box::downcast) to a
-    /// [`crypto::rustls::HandshakeData`](crate::crypto::rustls::HandshakeData).
-    pub async fn handshake_data(&mut self) -> Result<Box<dyn Any>, ConnectionError> {
-        // Taking &mut self allows us to use a single oneshot channel rather than dealing with
-        // potentially many tasks waiting on the same event. It's a bit of a hack, but keeps things
-        // simple.
-        if let Some(x) = self.handshake_data_ready.take() {
-            let _ = x.await;
-        }
-        let conn = self.conn.as_ref().unwrap();
-        let inner = conn.lock("handshake");
-        inner
-            .inner
-            .crypto_session()
-            .handshake_data()
-            .ok_or_else(|| {
-                inner
-                    .error
-                    .clone()
-                    .expect("spurious handshake data ready notification")
-            })
     }
 
     /// The local IP address which was used when the peer established
@@ -177,22 +109,8 @@ impl Connecting {
     ///
     /// Will panic if called after `poll` has returned `Ready`.
     pub fn remote_address(&self) -> SocketAddr {
-        let conn_ref: &ConnectionRef = self.conn.as_ref().expect("used after yielding Ready");
+        let conn_ref: &AssociationRef = self.conn.as_ref().expect("used after yielding Ready");
         conn_ref.lock("remote_address").inner.remote_address()
-    }
-}
-
-/// Future that completes when a connection is fully established
-///
-/// For clients, the resulting value indicates if 0-RTT was accepted. For servers, the resulting
-/// value is meaningless.
-#[must_use = "futures/streams/sinks do nothing unless you `.await` or poll them"]
-pub struct ZeroRttAccepted(oneshot::Receiver<bool>);
-
-impl Future for ZeroRttAccepted {
-    type Output = bool;
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
-        self.0.poll_unpin(cx).map(|x| x.unwrap_or(false))
     }
 }
 
@@ -216,14 +134,14 @@ let NewConnection { connection, .. } = { new_connection };
 ```"
 )]
 ///
-/// You can also explicitly invoke [`Connection::close()`] at any time.
+/// You can also explicitly invoke [`Association::close()`] at any time.
 ///
-/// [`Connection::close()`]: crate::Connection::close
+/// [`Association::close()`]: crate::Association::close
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct NewConnection {
     /// Handle for interacting with the connection
-    pub connection: Connection,
+    pub connection: Association,
     /// Unidirectional streams initiated by the peer, in the order they were opened
     ///
     /// Note that data for separate streams may be delivered in any order. In other words, reading
@@ -239,9 +157,9 @@ pub struct NewConnection {
 }
 
 impl NewConnection {
-    fn new(conn: ConnectionRef) -> Self {
+    fn new(conn: AssociationRef) -> Self {
         Self {
-            connection: Connection(conn.clone()),
+            connection: Association(conn.clone()),
             uni_streams: IncomingUniStreams(conn.clone()),
             bi_streams: IncomingBiStreams(conn.clone()),
             datagrams: Datagrams(conn),
@@ -252,8 +170,8 @@ impl NewConnection {
 /// A future that drives protocol logic for a connection
 ///
 /// This future handles the protocol logic for a single connection, routing events from the
-/// `Connection` API object to the `Endpoint` task and the related stream-related interfaces.
-/// It also keeps track of outstanding timeouts for the `Connection`.
+/// `Association` API object to the `Endpoint` task and the related stream-related interfaces.
+/// It also keeps track of outstanding timeouts for the `Association`.
 ///
 /// If the connection encounters an error condition, this future will yield an error. It will
 /// terminate (yielding `Ok(())`) if the connection was closed without error. Unlike other
@@ -261,9 +179,9 @@ impl NewConnection {
 /// packets still in flight from the peer are handled gracefully.
 #[must_use = "connection drivers must be spawned for their connections to function"]
 #[derive(Debug)]
-struct ConnectionDriver(ConnectionRef);
+struct AssociationDriver(AssociationRef);
 
-impl Future for ConnectionDriver {
+impl Future for AssociationDriver {
     type Output = ();
 
     #[allow(unused_mut)] // MSRV
@@ -300,20 +218,20 @@ impl Future for ConnectionDriver {
     }
 }
 
-/// A QUIC connection.
+/// A SCTP association.
 ///
-/// If all references to a connection (including every clone of the `Connection` handle, streams of
+/// If all references to a connection (including every clone of the `Association` handle, streams of
 /// incoming streams, and the various stream types) have been dropped, then the connection will be
 /// automatically closed with an `error_code` of 0 and an empty `reason`. You can also close the
-/// connection explicitly by calling [`Connection::close()`].
+/// connection explicitly by calling [`Association::close()`].
 ///
 /// May be cloned to obtain another handle to the same connection.
 ///
-/// [`Connection::close()`]: Connection::close
+/// [`Association::close()`]: Association::close
 #[derive(Debug)]
-pub struct Connection(ConnectionRef);
+pub struct Association(AssociationRef);
 
-impl Connection {
+impl Association {
     /// Initiate a new outgoing unidirectional stream.
     ///
     /// Streams are cheap and instantaneous to open unless blocked by flow control. As a
@@ -392,7 +310,7 @@ impl Connection {
     ///
     /// Not necessarily the maximum size of received datagrams.
     ///
-    /// [`send_datagram()`]: Connection::send_datagram
+    /// [`send_datagram()`]: Association::send_datagram
     pub fn max_datagram_size(&self) -> Option<usize> {
         self.0
             .lock("max_datagram_size")
@@ -452,7 +370,7 @@ impl Connection {
     /// [`Connecting::handshake_data()`] succeeds. See that method's documentations for details on
     /// the returned value.
     ///
-    /// [`Connection::handshake_data()`]: crate::Connecting::handshake_data
+    /// [`Association::handshake_data()`]: crate::Connecting::handshake_data
     pub fn handshake_data(&self) -> Option<Box<dyn Any>> {
         self.0
             .lock("handshake_data")
@@ -510,9 +428,9 @@ impl Connection {
     }
 }
 
-impl Clone for Connection {
+impl Clone for Association {
     fn clone(&self) -> Self {
-        Connection(self.0.clone())
+        Association(self.0.clone())
     }
 }
 
@@ -527,7 +445,7 @@ impl Clone for Connection {
 /// performance, an application should be prepared to fully process later streams before any data is
 /// received on earlier streams.
 #[derive(Debug)]
-pub struct IncomingUniStreams(ConnectionRef);
+pub struct IncomingUniStreams(AssociationRef);
 
 impl futures_util::stream::Stream for IncomingUniStreams {
     type Item = Result<RecvStream, ConnectionError>;
@@ -553,7 +471,7 @@ impl futures_util::stream::Stream for IncomingUniStreams {
 ///
 /// See `IncomingUniStreams` for information about incoming streams in general.
 #[derive(Debug)]
-pub struct IncomingBiStreams(ConnectionRef);
+pub struct IncomingBiStreams(AssociationRef);
 
 impl futures_util::stream::Stream for IncomingBiStreams {
     type Item = Result<(SendStream, RecvStream), ConnectionError>;
@@ -581,7 +499,7 @@ impl futures_util::stream::Stream for IncomingBiStreams {
 
 /// Stream of unordered, unreliable datagrams sent by the peer
 #[derive(Debug)]
-pub struct Datagrams(ConnectionRef);
+pub struct Datagrams(AssociationRef);
 
 impl futures_util::stream::Stream for Datagrams {
     type Item = Result<Bytes, ConnectionError>;
@@ -604,7 +522,7 @@ impl futures_util::stream::Stream for Datagrams {
 /// A future that will resolve into an opened outgoing unidirectional stream
 #[must_use = "futures/streams/sinks do nothing unless you `.await` or poll them"]
 pub struct OpenUni {
-    conn: ConnectionRef,
+    conn: AssociationRef,
     state: broadcast::State,
 }
 
@@ -630,7 +548,7 @@ impl Future for OpenUni {
 /// A future that will resolve into an opened outgoing bidirectional stream
 #[must_use = "futures/streams/sinks do nothing unless you `.await` or poll them"]
 pub struct OpenBi {
-    conn: ConnectionRef,
+    conn: AssociationRef,
     state: broadcast::State,
 }
 
@@ -659,12 +577,12 @@ impl Future for OpenBi {
 #[derive(Debug)]
 pub struct AssociationRef(Arc<Mutex<AssociationInner>>);
 /*
-impl ConnectionRef {
+impl AssociationRef {
     fn new(
-        handle: ConnectionHandle,
+        handle: AssociationHandle,
         conn: proto::Association,
-        endpoint_events: mpsc::UnboundedSender<(ConnectionHandle, EndpointEvent)>,
-        conn_events: mpsc::UnboundedReceiver<ConnectionEvent>,
+        endpoint_events: mpsc::UnboundedSender<(AssociationHandle, EndpointEvent)>,
+        conn_events: mpsc::UnboundedReceiver<AssociationEvent>,
         on_handshake_data: oneshot::Sender<()>,
         on_connected: oneshot::Sender<bool>,
         udp_state: Arc<UdpState>,
@@ -700,14 +618,14 @@ impl ConnectionRef {
     }
 }
 
-impl Clone for ConnectionRef {
+impl Clone for AssociationRef {
     fn clone(&self) -> Self {
         self.lock("clone").ref_count += 1;
         Self(self.0.clone())
     }
 }
 
-impl Drop for ConnectionRef {
+impl Drop for AssociationRef {
     fn drop(&mut self) {
         let conn = &mut *self.lock("drop");
         if let Some(x) = conn.ref_count.checked_sub(1) {
@@ -723,7 +641,7 @@ impl Drop for ConnectionRef {
     }
 }
 
-impl std::ops::Deref for ConnectionRef {
+impl std::ops::Deref for AssociationRef {
     type Target = Mutex<AssociationInner>;
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -799,13 +717,13 @@ impl AssociationInner {
     fn process_conn_events(&mut self, cx: &mut Context) -> Result<(), ConnectionError> {
         loop {
             match self.conn_events.poll_next_unpin(cx) {
-                Poll::Ready(Some(ConnectionEvent::Ping)) => {
+                Poll::Ready(Some(AssociationEvent::Ping)) => {
                     self.inner.ping();
                 }
-                Poll::Ready(Some(ConnectionEvent::Proto(event))) => {
+                Poll::Ready(Some(AssociationEvent::Proto(event))) => {
                     self.inner.handle_event(event);
                 }
-                Poll::Ready(Some(ConnectionEvent::Close { reason, error_code })) => {
+                Poll::Ready(Some(AssociationEvent::Close { reason, error_code })) => {
                     self.close(error_code, reason);
                 }
                 Poll::Ready(None) => {
@@ -1008,6 +926,7 @@ impl AssociationInner {
     }
 }
 
+*/
 impl Drop for AssociationInner {
     fn drop(&mut self) {
         if !self.inner.is_drained() {
@@ -1019,7 +938,6 @@ impl Drop for AssociationInner {
         }
     }
 }
-*/
 impl fmt::Debug for AssociationInner {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AssociationInner")

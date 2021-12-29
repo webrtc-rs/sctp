@@ -50,6 +50,18 @@ impl fmt::Display for AssociationState {
     }
 }
 
+impl AssociationState {
+    pub(crate) fn is_drained(&self) -> bool {
+        matches!(
+            *self,
+            AssociationState::ShutdownSent
+                | AssociationState::ShutdownAckSent
+                | AssociationState::ShutdownPending
+                | AssociationState::ShutdownReceived
+        )
+    }
+}
+
 /// ack mode (for testing)
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub(crate) enum AckMode {
