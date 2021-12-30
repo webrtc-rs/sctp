@@ -120,17 +120,27 @@ impl<'a> Stream<'a> {
         Err(Error::ErrStreamClosed)
     }
 
+    /// write_sctp writes len(p) bytes from p to the DTLS connection
+    pub fn write_sctp(&mut self, p: &Bytes, ppi: PayloadProtocolIdentifier) -> Result<usize> {
+        self.write_source(&mut ByteSlice::from_slice(p), ppi)
+    }
+
     /// Send data on the given stream
     ///
     /// Returns the number of bytes successfully written.
     pub fn write(&mut self, data: &[u8]) -> Result<usize> {
-        let default_payload_type =
-            if let Some(s) = self.association.streams.get(&self.stream_identifier) {
-                s.default_payload_type
-            } else {
-                return Err(Error::ErrStreamClosed);
-            };
-        self.write_source(&mut ByteSlice::from_slice(data), default_payload_type)
+        self.write_source(
+            &mut ByteSlice::from_slice(data),
+            self.get_default_payload_type()?,
+        )
+    }
+
+    /// write writes len(p) bytes from p with the default Payload Protocol Identifier
+    pub fn write_chunk(&mut self, p: &Bytes) -> Result<usize> {
+        self.write_source(
+            &mut ByteSlice::from_slice(p),
+            self.get_default_payload_type()?,
+        )
     }
 
     /// Send data on the given stream
@@ -140,29 +150,10 @@ impl<'a> Stream<'a> {
     /// [`Written::chunks`] will not count this chunk as fully written. However
     /// the chunk will be advanced and contain only non-written data after the call.
     pub fn write_chunks(&mut self, data: &mut [Bytes]) -> Result<usize> {
-        let default_payload_type =
-            if let Some(s) = self.association.streams.get(&self.stream_identifier) {
-                s.default_payload_type
-            } else {
-                return Err(Error::ErrStreamClosed);
-            };
-        self.write_source(&mut BytesArray::from_chunks(data), default_payload_type)
-    }
-
-    /// write writes len(p) bytes from p with the default Payload Protocol Identifier
-    pub fn write_chunk(&mut self, p: &Bytes) -> Result<usize> {
-        let default_payload_type =
-            if let Some(s) = self.association.streams.get(&self.stream_identifier) {
-                s.default_payload_type
-            } else {
-                return Err(Error::ErrStreamClosed);
-            };
-        self.write_source(&mut ByteSlice::from_slice(p), default_payload_type)
-    }
-
-    /// write_sctp writes len(p) bytes from p to the DTLS connection
-    pub fn write_sctp(&mut self, p: &Bytes, ppi: PayloadProtocolIdentifier) -> Result<usize> {
-        self.write_source(&mut ByteSlice::from_slice(p), ppi)
+        self.write_source(
+            &mut BytesArray::from_chunks(data),
+            self.get_default_payload_type()?,
+        )
     }
 
     /// write_source writes BytesSource to the DTLS connection
@@ -219,6 +210,14 @@ impl<'a> Stream<'a> {
         }
 
         Ok(())
+    }
+
+    fn get_default_payload_type(&self) -> Result<PayloadProtocolIdentifier> {
+        if let Some(s) = self.association.streams.get(&self.stream_identifier) {
+            Ok(s.default_payload_type)
+        } else {
+            Err(Error::ErrStreamClosed)
+        }
     }
 }
 
