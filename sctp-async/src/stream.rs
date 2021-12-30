@@ -7,7 +7,7 @@ use std::{
 
 use bytes::Bytes;
 use futures_channel::oneshot;
-use futures_util::{io::AsyncRead, /*io::AsyncWrite,*/ ready /*FutureExt*/};
+use futures_util::{io::AsyncRead, io::AsyncWrite, ready, FutureExt};
 use proto::{AssociationError, Chunk, Chunks, ErrorCauseCode, StreamId};
 use thiserror::Error;
 use tokio::io::ReadBuf;
@@ -42,7 +42,6 @@ impl Stream {
 
 // Send part
 impl Stream {
-    /*
     /// Write bytes to the stream
     ///
     /// Yields the number of bytes written on success. Congestion and flow control may cause this to
@@ -82,31 +81,24 @@ impl Stream {
         }
     }
 
-    fn execute_poll<F, R>(&mut self, cx: &mut Context<'_>, write_fn: F) -> Poll<Result<R, WriteError>>
+    fn execute_poll<F, R>(
+        &mut self,
+        _cx: &mut Context<'_>,
+        write_fn: F,
+    ) -> Poll<Result<R, WriteError>>
     where
-        F: FnOnce(&mut proto::SendStream) -> Result<R, proto::WriteError>,
+        F: FnOnce(&mut proto::Stream<'_>) -> Result<R, WriteError>,
     {
-        use proto::WriteError::*;
-        let mut conn = self.conn.lock("SendStream::poll_write");
-        if self.is_0rtt {
-            conn.check_0rtt()
-                .map_err(|()| WriteError::ZeroRttRejected)?;
-        }
+        let mut conn = self.conn.lock("Stream::poll_write");
+
         if let Some(ref x) = conn.error {
             return Poll::Ready(Err(WriteError::ConnectionLost(x.clone())));
         }
 
-        let result = match write_fn(&mut conn.inner.send_stream(self.stream)) {
+        let result = match write_fn(&mut conn.inner.stream(self.stream)?) {
             Ok(result) => result,
-            Err(Blocked) => {
-                conn.blocked_writers.insert(self.stream, cx.waker().clone());
-                return Poll::Pending;
-            }
-            Err(Stopped(error_code)) => {
-                return Poll::Ready(Err(WriteError::Stopped(error_code)));
-            }
-            Err(UnknownStream) => {
-                return Poll::Ready(Err(WriteError::UnknownStream));
+            Err(error) => {
+                return Poll::Ready(Err(error));
             }
         };
 
@@ -125,18 +117,9 @@ impl Stream {
     #[doc(hidden)]
     pub fn poll_finish(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), WriteError>> {
         let mut conn = self.conn.lock("poll_finish");
-        if self.is_0rtt {
-            conn.check_0rtt()
-                .map_err(|()| WriteError::ZeroRttRejected)?;
-        }
+
         if self.finishing.is_none() {
-            conn.inner
-                .send_stream(self.stream)
-                .finish()
-                .map_err(|e| match e {
-                    FinishError::UnknownStream => WriteError::UnknownStream,
-                    FinishError::Stopped(error_code) => WriteError::Stopped(error_code),
-                })?;
+            conn.inner.stream(self.stream)?.close()?;
             let (send, recv) = oneshot::channel();
             self.finishing = Some(recv);
             conn.finishing.insert(self.stream, send);
@@ -170,33 +153,11 @@ impl Stream {
     /// No new data can be written after calling this method. Locally buffered data is dropped, and
     /// previously transmitted data will no longer be retransmitted if lost. If an attempt has
     /// already been made to finish the stream, the peer may still receive all written data.
-    pub fn reset(&mut self, error_code: VarInt) -> Result<(), UnknownStream> {
-        let mut conn = self.conn.lock("SendStream::reset");
-        if self.is_0rtt && conn.check_0rtt().is_err() {
-            return Ok(());
-        }
-        conn.inner.send_stream(self.stream).reset(error_code)?;
+    pub fn close(&mut self, _error_code: ErrorCauseCode) -> Result<(), UnknownStream> {
+        let mut conn = self.conn.lock("Stream::reset");
+        conn.inner.stream(self.stream)?.close()?; //
         conn.wake();
         Ok(())
-    }
-
-    /// Set the priority of the send stream
-    ///
-    /// Every send stream has an initial priority of 0. Locally buffered data from streams with
-    /// higher priority will be transmitted before data from streams with lower priority. Changing
-    /// the priority of a stream with pending data may only take effect after that data has been
-    /// transmitted. Using many different priority levels per connection may have a negative
-    /// impact on performance.
-    pub fn set_priority(&self, priority: i32) -> Result<(), UnknownStream> {
-        let mut conn = self.conn.lock("SendStream::set_priority");
-        conn.inner.send_stream(self.stream).set_priority(priority)?;
-        Ok(())
-    }
-
-    /// Get the priority of the send stream
-    pub fn priority(&self) -> Result<i32, UnknownStream> {
-        let mut conn = self.conn.lock("SendStream::priority");
-        Ok(conn.inner.send_stream(self.stream).priority()?)
     }
 
     /// Completes if/when the peer stops the stream, yielding the error code
@@ -205,33 +166,28 @@ impl Stream {
     }
 
     #[doc(hidden)]
-    pub fn poll_stopped(&mut self, cx: &mut Context<'_>) -> Poll<Result<VarInt, StoppedError>> {
-        let mut conn = self.conn.lock("SendStream::poll_stopped");
+    pub fn poll_stopped(&mut self, cx: &mut Context<'_>) -> Poll<Result<bool, StoppedError>> {
+        let mut conn = self.conn.lock("Stream::poll_stopped");
 
-        if self.is_0rtt {
-            conn.check_0rtt()
-                .map_err(|()| StoppedError::ZeroRttRejected)?;
-        }
-
-        match conn.inner.send_stream(self.stream).stopped() {
-            Err(_) => Poll::Ready(Err(StoppedError::UnknownStream)),
-            Ok(Some(error_code)) => Poll::Ready(Ok(error_code)),
-            Ok(None) => {
-                conn.stopped.insert(self.stream, cx.waker().clone());
-                Poll::Pending
-            }
+        if conn.inner.stream(self.stream)?.is_closed() {
+            Poll::Ready(Ok(true))
+        } else {
+            conn.stopped.insert(self.stream, cx.waker().clone());
+            Poll::Pending
         }
     }
-
-    /// Get the identity of this stream
-    pub fn id(&self) -> StreamId {
-        self.stream
-    }*/
 }
-/*
-impl AsyncWrite for SendStream {
-    fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
-        SendStream::execute_poll(self.get_mut(), cx, |stream| stream.write(buf)).map_err(Into::into)
+
+impl AsyncWrite for Stream {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Stream::execute_poll(self.get_mut(), cx, |stream| {
+            stream.write(buf).map_err(Into::into)
+        })
+        .map_err(Into::into)
     }
 
     fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
@@ -243,7 +199,7 @@ impl AsyncWrite for SendStream {
     }
 }
 
-impl tokio::io::AsyncWrite for SendStream {
+impl tokio::io::AsyncWrite for Stream {
     fn poll_write(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -261,31 +217,25 @@ impl tokio::io::AsyncWrite for SendStream {
     }
 }
 
-impl Drop for SendStream {
+impl Drop for Stream {
     fn drop(&mut self) {
-        let mut conn = self.conn.lock("SendStream::drop");
-        if conn.error.is_some() || (self.is_0rtt && conn.check_0rtt().is_err()) {
+        let mut conn = self.conn.lock("Stream::drop");
+        if conn.error.is_some() {
             return;
         }
-        if self.finishing.is_none() {
-            match conn.inner.send_stream(self.stream).finish() {
-                Ok(()) => conn.wake(),
-                Err(FinishError::Stopped(reason)) => {
-                    if conn.inner.send_stream(self.stream).reset(reason).is_ok() {
-                        conn.wake();
-                    }
-                }
-                // Already finished or reset, which is fine.
-                Err(FinishError::UnknownStream) => {}
+        if !self.all_data_read || self.finishing.is_none() {
+            if let Ok(mut stream) = conn.inner.stream(self.stream) {
+                let _ = stream.close();
             }
+            conn.wake();
         }
     }
 }
 
-/// Future produced by `SendStream::finish`
+/// Future produced by `Stream::finish`
 #[must_use = "futures/streams/sinks do nothing unless you `.await` or poll them"]
 pub struct Finish<'a> {
-    stream: &'a mut SendStream,
+    stream: &'a mut Stream,
 }
 
 impl Future for Finish<'_> {
@@ -296,26 +246,26 @@ impl Future for Finish<'_> {
     }
 }
 
-/// Future produced by `SendStream::stopped`
+/// Future produced by `Stream::stopped`
 #[must_use = "futures/streams/sinks do nothing unless you `.await` or poll them"]
 pub struct Stopped<'a> {
-    stream: &'a mut SendStream,
+    stream: &'a mut Stream,
 }
 
 impl Future for Stopped<'_> {
-    type Output = Result<VarInt, StoppedError>;
+    type Output = Result<bool, StoppedError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         self.get_mut().stream.poll_stopped(cx)
     }
 }
 
-/// Future produced by [`SendStream::write()`].
+/// Future produced by [`Stream::write()`].
 ///
-/// [`SendStream::write()`]: crate::SendStream::write
+/// [`Stream::write()`]: crate::Stream::write
 #[must_use = "futures/streams/sinks do nothing unless you `.await` or poll them"]
 pub struct Write<'a> {
-    stream: &'a mut SendStream,
+    stream: &'a mut Stream,
     buf: &'a [u8],
 }
 
@@ -324,16 +274,17 @@ impl<'a> Future for Write<'a> {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
         let buf = this.buf;
-        this.stream.execute_poll(cx, |s| s.write(buf))
+        this.stream
+            .execute_poll(cx, |s| s.write(buf).map_err(Into::into))
     }
 }
 
-/// Future produced by [`SendStream::write_all()`].
+/// Future produced by [`Stream::write_all()`].
 ///
-/// [`SendStream::write_all()`]: crate::SendStream::write_all
+/// [`Stream::write_all()`]: crate::Stream::write_all
 #[must_use = "futures/streams/sinks do nothing unless you `.await` or poll them"]
 pub struct WriteAll<'a> {
-    stream: &'a mut SendStream,
+    stream: &'a mut Stream,
     buf: &'a [u8],
 }
 
@@ -346,36 +297,39 @@ impl<'a> Future for WriteAll<'a> {
                 return Poll::Ready(Ok(()));
             }
             let buf = this.buf;
-            let n = ready!(this.stream.execute_poll(cx, |s| s.write(buf)))?;
+            let n = ready!(this
+                .stream
+                .execute_poll(cx, |s| s.write(buf).map_err(Into::into)))?;
             this.buf = &this.buf[n..];
         }
     }
 }
 
-/// Future produced by [`SendStream::write_chunks()`].
+/// Future produced by [`Stream::write_chunks()`].
 ///
-/// [`SendStream::write_chunks()`]: crate::SendStream::write_chunks
+/// [`Stream::write_chunks()`]: crate::Stream::write_chunks
 #[must_use = "futures/streams/sinks do nothing unless you `.await` or poll them"]
 pub struct WriteChunks<'a> {
-    stream: &'a mut SendStream,
+    stream: &'a mut Stream,
     bufs: &'a mut [Bytes],
 }
 
 impl<'a> Future for WriteChunks<'a> {
-    type Output = Result<Written, WriteError>;
+    type Output = Result<usize, WriteError>;
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
         let bufs = &mut *this.bufs;
-        this.stream.execute_poll(cx, |s| s.write_chunks(bufs))
+        this.stream
+            .execute_poll(cx, |s| s.write_chunks(bufs).map_err(Into::into))
     }
 }
 
-/// Future produced by [`SendStream::write_chunk()`].
+/// Future produced by [`Stream::write_chunk()`].
 ///
-/// [`SendStream::write_chunk()`]: crate::SendStream::write_chunk
+/// [`Stream::write_chunk()`]: crate::Stream::write_chunk
 #[must_use = "futures/streams/sinks do nothing unless you `.await` or poll them"]
 pub struct WriteChunk<'a> {
-    stream: &'a mut SendStream,
+    stream: &'a mut Stream,
     buf: [Bytes; 1],
 }
 
@@ -388,17 +342,19 @@ impl<'a> Future for WriteChunk<'a> {
                 return Poll::Ready(Ok(()));
             }
             let bufs = &mut this.buf[..];
-            ready!(this.stream.execute_poll(cx, |s| s.write_chunks(bufs)))?;
+            ready!(this
+                .stream
+                .execute_poll(cx, |s| s.write_chunks(bufs).map_err(Into::into)))?;
         }
     }
 }
 
-/// Future produced by [`SendStream::write_all_chunks()`].
+/// Future produced by [`Stream::write_all_chunks()`].
 ///
-/// [`SendStream::write_all_chunks()`]: crate::SendStream::write_all_chunks
+/// [`Stream::write_all_chunks()`]: crate::Stream::write_all_chunks
 #[must_use = "futures/streams/sinks do nothing unless you `.await` or poll them"]
 pub struct WriteAllChunks<'a> {
-    stream: &'a mut SendStream,
+    stream: &'a mut Stream,
     bufs: &'a mut [Bytes],
     offset: usize,
 }
@@ -412,16 +368,20 @@ impl<'a> Future for WriteAllChunks<'a> {
                 return Poll::Ready(Ok(()));
             }
             let bufs = &mut this.bufs[this.offset..];
-            let written = ready!(this.stream.execute_poll(cx, |s| s.write_chunks(bufs)))?;
-            this.offset += written.chunks;
+            let written = ready!(this
+                .stream
+                .execute_poll(cx, |s| s.write_chunks(bufs).map_err(Into::into)))?;
+            this.offset += written;
         }
     }
 }
-*/
 
 /// Errors that arise from writing to a stream
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum WriteError {
+    /// The proto error
+    #[error("proto error {0}")]
+    Error(#[from] proto::Error),
     /// The peer is no longer accepting data on this stream
     ///
     /// Carries an application-defined error code.
@@ -433,44 +393,31 @@ pub enum WriteError {
     /// The stream has already been finished or reset
     #[error("unknown stream")]
     UnknownStream,
-    /// This was a 0-RTT stream and the server rejected it
-    ///
-    /// Can only occur on clients for 0-RTT streams, which can be opened using
-    /// [`Connecting::into_0rtt()`].
-    ///
-    /// [`Connecting::into_0rtt()`]: crate::Connecting::into_0rtt()
-    #[error("0-RTT rejected")]
-    ZeroRttRejected,
-}
-
-/// Errors that arise while monitoring for a send stream stop from the peer
-#[derive(Debug, Error, Clone, PartialEq, Eq)]
-pub enum StoppedError {
-    /// The connection was lost
-    #[error("connection lost")]
-    ConnectionLost(#[from] AssociationError),
-    /// The stream has already been finished or reset
-    #[error("unknown stream")]
-    UnknownStream,
-    /// This was a 0-RTT stream and the server rejected it
-    ///
-    /// Can only occur on clients for 0-RTT streams, which can be opened using
-    /// [`Connecting::into_0rtt()`].
-    ///
-    /// [`Connecting::into_0rtt()`]: crate::Connecting::into_0rtt()
-    #[error("0-RTT rejected")]
-    ZeroRttRejected,
 }
 
 impl From<WriteError> for io::Error {
     fn from(x: WriteError) -> Self {
         use self::WriteError::*;
         let kind = match x {
-            Stopped(_) | ZeroRttRejected => io::ErrorKind::ConnectionReset,
-            ConnectionLost(_) | UnknownStream => io::ErrorKind::NotConnected,
+            Stopped(_) => io::ErrorKind::ConnectionReset,
+            Error(_) | ConnectionLost(_) | UnknownStream => io::ErrorKind::NotConnected,
         };
         io::Error::new(kind, x)
     }
+}
+
+/// Errors that arise while monitoring for a send stream stop from the peer
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum StoppedError {
+    /// The proto error
+    #[error("proto error {0}")]
+    Error(#[from] proto::Error),
+    /// The connection was lost
+    #[error("connection lost")]
+    ConnectionLost(#[from] AssociationError),
+    /// The stream has already been finished or reset
+    #[error("unknown stream")]
+    UnknownStream,
 }
 
 // Recv Part
@@ -739,22 +686,6 @@ impl tokio::io::AsyncRead for Stream {
     ) -> Poll<io::Result<()>> {
         ready!(Stream::poll_read(self.get_mut(), cx, buf))?;
         Poll::Ready(Ok(()))
-    }
-}
-
-impl Drop for Stream {
-    fn drop(&mut self) {
-        let mut conn = self.conn.lock("Stream::drop");
-        if conn.error.is_some() {
-            return;
-        }
-        if !self.all_data_read {
-            // Ignore UnknownStream errors
-            if let Ok(mut stream) = conn.inner.stream(self.stream) {
-                let _ = stream.close(); //0u32.into()
-            }
-            conn.wake();
-        }
     }
 }
 

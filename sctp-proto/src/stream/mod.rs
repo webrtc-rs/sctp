@@ -8,6 +8,7 @@ use crate::error::{Error, Result};
 use crate::queue::reassembly_queue::{Chunks, ReassemblyQueue};
 use crate::{ErrorCauseCode, Side};
 
+use crate::util::{ByteSlice, BytesArray, BytesSource};
 use bytes::Bytes;
 use std::fmt;
 use tracing::{debug, error, trace};
@@ -119,20 +120,58 @@ impl<'a> Stream<'a> {
         Err(Error::ErrStreamClosed)
     }
 
-    /// write writes len(p) bytes from p with the default Payload Protocol Identifier
-    pub fn write(&mut self, p: &Bytes) -> Result<usize> {
+    /// Send data on the given stream
+    ///
+    /// Returns the number of bytes successfully written.
+    pub fn write(&mut self, data: &[u8]) -> Result<usize> {
         let default_payload_type =
             if let Some(s) = self.association.streams.get(&self.stream_identifier) {
                 s.default_payload_type
             } else {
                 return Err(Error::ErrStreamClosed);
             };
-        self.write_sctp(p, default_payload_type)
+        self.write_source(&mut ByteSlice::from_slice(data), default_payload_type)
+    }
+
+    /// Send data on the given stream
+    ///
+    /// Returns the number of bytes and chunks successfully written.
+    /// Note that this method might also write a partial chunk. In this case
+    /// [`Written::chunks`] will not count this chunk as fully written. However
+    /// the chunk will be advanced and contain only non-written data after the call.
+    pub fn write_chunks(&mut self, data: &mut [Bytes]) -> Result<usize> {
+        let default_payload_type =
+            if let Some(s) = self.association.streams.get(&self.stream_identifier) {
+                s.default_payload_type
+            } else {
+                return Err(Error::ErrStreamClosed);
+            };
+        self.write_source(&mut BytesArray::from_chunks(data), default_payload_type)
+    }
+
+    /// write writes len(p) bytes from p with the default Payload Protocol Identifier
+    pub fn write_chunk(&mut self, p: &Bytes) -> Result<usize> {
+        let default_payload_type =
+            if let Some(s) = self.association.streams.get(&self.stream_identifier) {
+                s.default_payload_type
+            } else {
+                return Err(Error::ErrStreamClosed);
+            };
+        self.write_source(&mut ByteSlice::from_slice(p), default_payload_type)
     }
 
     /// write_sctp writes len(p) bytes from p to the DTLS connection
     pub fn write_sctp(&mut self, p: &Bytes, ppi: PayloadProtocolIdentifier) -> Result<usize> {
-        if p.len() > self.association.max_message_size() as usize {
+        self.write_source(&mut ByteSlice::from_slice(p), ppi)
+    }
+
+    /// write_source writes BytesSource to the DTLS connection
+    fn write_source<B: BytesSource>(
+        &mut self,
+        source: &mut B,
+        ppi: PayloadProtocolIdentifier,
+    ) -> Result<usize> {
+        if source.remaining() > self.association.max_message_size() as usize {
             return Err(Error::ErrOutboundPacketTooLarge);
         }
 
@@ -145,14 +184,20 @@ impl<'a> Stream<'a> {
             _ => {}
         };
 
+        let (p, _) = source.pop_chunk(self.association.max_message_size() as usize);
+
         if let Some(s) = self.association.streams.get_mut(&self.stream_identifier) {
-            let chunks = s.packetize(p, ppi);
+            let chunks = s.packetize(&p, ppi);
             self.association.send_payload_data(chunks)?;
 
             Ok(p.len())
         } else {
             Err(Error::ErrStreamClosed)
         }
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.closed
     }
 
     /// Close closes the write-direction of the stream.

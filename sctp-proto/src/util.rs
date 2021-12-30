@@ -92,6 +92,133 @@ pub(crate) fn generate_packet_checksum(raw: &Bytes) -> u32 {
     digest.finalize()
 }
 
+/// A [`BytesSource`] implementation for `&'a mut [Bytes]`
+///
+/// The type allows to dequeue [`Bytes`] chunks from an array of chunks, up to
+/// a configured limit.
+pub struct BytesArray<'a> {
+    /// The wrapped slice of `Bytes`
+    chunks: &'a mut [Bytes],
+    /// The amount of chunks consumed from this source
+    consumed: usize,
+    length: usize,
+}
+
+impl<'a> BytesArray<'a> {
+    pub fn from_chunks(chunks: &'a mut [Bytes]) -> Self {
+        let mut length = 0;
+        for chunk in chunks.iter() {
+            length += chunk.len();
+        }
+
+        Self {
+            chunks,
+            consumed: 0,
+            length,
+        }
+    }
+}
+
+impl<'a> BytesSource for BytesArray<'a> {
+    fn pop_chunk(&mut self, limit: usize) -> (Bytes, usize) {
+        // The loop exists to skip empty chunks while still marking them as
+        // consumed
+        let mut chunks_consumed = 0;
+
+        while self.consumed < self.chunks.len() {
+            let chunk = &mut self.chunks[self.consumed];
+
+            if chunk.len() <= limit {
+                let chunk = std::mem::take(chunk);
+                self.consumed += 1;
+                chunks_consumed += 1;
+                if chunk.is_empty() {
+                    continue;
+                }
+                return (chunk, chunks_consumed);
+            } else if limit > 0 {
+                let chunk = chunk.split_to(limit);
+                return (chunk, chunks_consumed);
+            } else {
+                break;
+            }
+        }
+
+        (Bytes::new(), chunks_consumed)
+    }
+
+    fn has_remaining(&self) -> bool {
+        self.consumed < self.length
+    }
+
+    fn remaining(&self) -> usize {
+        self.length - self.consumed
+    }
+}
+
+/// A [`BytesSource`] implementation for `&[u8]`
+///
+/// The type allows to dequeue a single [`Bytes`] chunk, which will be lazily
+/// created from a reference. This allows to defer the allocation until it is
+/// known how much data needs to be copied.
+pub struct ByteSlice<'a> {
+    /// The wrapped byte slice
+    data: &'a [u8],
+}
+
+impl<'a> ByteSlice<'a> {
+    pub fn from_slice(data: &'a [u8]) -> Self {
+        Self { data }
+    }
+}
+
+impl<'a> BytesSource for ByteSlice<'a> {
+    fn pop_chunk(&mut self, limit: usize) -> (Bytes, usize) {
+        let limit = limit.min(self.data.len());
+        if limit == 0 {
+            return (Bytes::new(), 0);
+        }
+
+        let chunk = Bytes::from(self.data[..limit].to_owned());
+        self.data = &self.data[chunk.len()..];
+
+        let chunks_consumed = if self.data.is_empty() { 1 } else { 0 };
+        (chunk, chunks_consumed)
+    }
+
+    fn has_remaining(&self) -> bool {
+        !self.data.is_empty()
+    }
+
+    fn remaining(&self) -> usize {
+        self.data.len()
+    }
+}
+
+/// A source of one or more buffers which can be converted into `Bytes` buffers on demand
+///
+/// The purpose of this data type is to defer conversion as long as possible,
+/// so that no heap allocation is required in case no data is writable.
+pub trait BytesSource {
+    /// Returns the next chunk from the source of owned chunks.
+    ///
+    /// This method will consume parts of the source.
+    /// Calling it will yield `Bytes` elements up to the configured `limit`.
+    ///
+    /// The method returns a tuple:
+    /// - The first item is the yielded `Bytes` element. The element will be
+    ///   empty if the limit is zero or no more data is available.
+    /// - The second item returns how many complete chunks inside the source had
+    ///   had been consumed. This can be less than 1, if a chunk inside the
+    ///   source had been truncated in order to adhere to the limit. It can also
+    ///   be more than 1, if zero-length chunks had been skipped.
+    fn pop_chunk(&mut self, limit: usize) -> (Bytes, usize);
+
+    fn has_remaining(&self) -> bool;
+
+    fn remaining(&self) -> usize;
+}
+
 /// Serial Number Arithmetic (RFC 1982)
 #[inline]
 pub(crate) fn sna32lt(i1: u32, i2: u32) -> bool {
