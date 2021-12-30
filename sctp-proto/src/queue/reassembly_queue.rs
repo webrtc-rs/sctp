@@ -1,8 +1,9 @@
 use crate::chunk::chunk_payload_data::{ChunkPayloadData, PayloadProtocolIdentifier};
 use crate::error::{Error, Result};
 use crate::util::*;
-
 use crate::StreamId;
+
+use bytes::{Bytes, BytesMut};
 use std::cmp::Ordering;
 
 fn sort_chunks_by_tsn(c: &mut Vec<ChunkPayloadData>) {
@@ -25,13 +26,22 @@ fn sort_chunks_by_ssn(c: &mut Vec<Chunks>) {
     });
 }
 
+/// A chunk of data from the stream
+#[derive(Debug, PartialEq)]
+pub struct Chunk {
+    /// The contents of the chunk
+    pub bytes: Bytes,
+}
+
 /// Chunks is a set of chunks that share the same SSN
-#[derive(Debug, Clone)]
+#[derive(Default, Debug, Clone)]
 pub struct Chunks {
     /// used only with the ordered chunks
     pub(crate) ssn: u16,
     pub ppi: PayloadProtocolIdentifier,
     pub chunks: Vec<ChunkPayloadData>,
+    offset: usize,
+    index: usize,
 }
 
 impl Chunks {
@@ -50,31 +60,57 @@ impl Chunks {
     // Concat all fragments into the buffer
     pub fn read(&self, buf: &mut [u8]) -> Result<usize> {
         let mut n_written = 0;
-        let mut err = None;
         for c in &self.chunks {
             let to_copy = c.user_data.len();
-            if err.is_none() {
-                let n = std::cmp::min(to_copy, buf.len() - n_written);
-                buf[n_written..n_written + n].copy_from_slice(&c.user_data[..n]);
-                n_written += n;
-                if n < to_copy {
-                    err = Some(Error::ErrShortBuffer);
-                }
+            let n = std::cmp::min(to_copy, buf.len() - n_written);
+            buf[n_written..n_written + n].copy_from_slice(&c.user_data[..n]);
+            n_written += n;
+            if n < to_copy {
+                return Err(Error::ErrShortBuffer);
             }
         }
-
-        if let Some(err) = err {
-            Err(err)
-        } else {
-            Ok(n_written)
-        }
+        Ok(n_written)
     }
 
-    pub(crate) fn new(ssn: u16, ppi: PayloadProtocolIdentifier) -> Self {
+    pub fn next(&mut self, max_length: usize) -> Option<Chunk> {
+        if self.index >= self.chunks.len() {
+            return None;
+        }
+
+        let mut buf = BytesMut::with_capacity(max_length);
+
+        let mut n_written = 0;
+        while self.index < self.chunks.len() {
+            let to_copy = self.chunks[self.index].user_data[self.offset..].len();
+            let n = std::cmp::min(to_copy, max_length - n_written);
+            buf.copy_from_slice(&self.chunks[self.index].user_data[self.offset..self.offset + n]);
+            n_written += n;
+            if n < to_copy {
+                self.offset += n;
+                return Some(Chunk {
+                    bytes: buf.freeze(),
+                });
+            }
+            self.index += 1;
+            self.offset = 0;
+        }
+
+        Some(Chunk {
+            bytes: buf.freeze(),
+        })
+    }
+
+    pub(crate) fn new(
+        ssn: u16,
+        ppi: PayloadProtocolIdentifier,
+        chunks: Vec<ChunkPayloadData>,
+    ) -> Self {
         Chunks {
             ssn,
             ppi,
-            chunks: vec![],
+            chunks,
+            offset: 0,
+            index: 0,
         }
     }
 
@@ -204,7 +240,7 @@ impl ReassemblyQueue {
             }
 
             // If not found, create a new chunkSet
-            let mut cset = Chunks::new(chunk.stream_sequence_number, chunk.payload_type);
+            let mut cset = Chunks::new(chunk.stream_sequence_number, chunk.payload_type, vec![]);
             let unordered = chunk.unordered;
             let ok = cset.push(chunk);
             self.ordered.push(cset);
@@ -264,11 +300,7 @@ impl ReassemblyQueue {
             .unordered_chunks
             .drain(start_idx as usize..(start_idx as usize) + n_chunks)
             .collect();
-
-        let mut chunk_set = Chunks::new(0, chunks[0].payload_type);
-        chunk_set.chunks = chunks;
-
-        Some(chunk_set)
+        Some(Chunks::new(0, chunks[0].payload_type, chunks))
     }
 
     pub(crate) fn is_readable(&self) -> bool {

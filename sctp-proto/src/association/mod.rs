@@ -656,7 +656,7 @@ impl Association {
     }
 
     /// stream returns a stream
-    pub(crate) fn stream(&mut self, stream_identifier: StreamId) -> Result<Stream<'_>> {
+    pub fn stream(&mut self, stream_identifier: StreamId) -> Result<Stream<'_>> {
         if !self.streams.contains_key(&stream_identifier) {
             Err(Error::ErrStreamNotExisted)
         } else {

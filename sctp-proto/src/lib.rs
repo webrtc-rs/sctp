@@ -53,7 +53,7 @@ pub use crate::stream::{ReliabilityType, Stream, StreamEvent, StreamId, StreamSt
 pub(crate) mod param;
 
 pub(crate) mod queue;
-pub use crate::queue::reassembly_queue::Chunks;
+pub use crate::queue::reassembly_queue::{Chunk, Chunks};
 
 pub(crate) mod util;
 

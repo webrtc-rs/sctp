@@ -930,14 +930,14 @@ fn test_reassembly_queue_forward_tsn_for_unordered_framents() -> Result<()> {
 
 #[test]
 fn test_chunk_set_empty_chunk_set() -> Result<()> {
-    let cset = Chunks::new(0, PayloadProtocolIdentifier::default());
+    let cset = Chunks::new(0, PayloadProtocolIdentifier::default(), vec![]);
     assert!(!cset.is_complete(), "empty chunkSet cannot be complete");
     Ok(())
 }
 
 #[test]
 fn test_chunk_set_push_dup_chunks_to_chunk_set() -> Result<()> {
-    let mut cset = Chunks::new(0, PayloadProtocolIdentifier::default());
+    let mut cset = Chunks::new(0, PayloadProtocolIdentifier::default(), vec![]);
     cset.push(ChunkPayloadData {
         tsn: 100,
         beginning_fragment: true,
@@ -955,11 +955,7 @@ fn test_chunk_set_push_dup_chunks_to_chunk_set() -> Result<()> {
 
 #[test]
 fn test_chunk_set_incomplete_chunk_set_no_beginning() -> Result<()> {
-    let cset = Chunks {
-        ssn: 0,
-        ppi: PayloadProtocolIdentifier::default(),
-        chunks: vec![],
-    };
+    let cset = Chunks::new(0, PayloadProtocolIdentifier::default(), vec![]);
     assert!(
         !cset.is_complete(),
         "chunkSet not starting with B=1 cannot be complete"
@@ -969,10 +965,10 @@ fn test_chunk_set_incomplete_chunk_set_no_beginning() -> Result<()> {
 
 #[test]
 fn test_chunk_set_incomplete_chunk_set_no_contiguous_tsn() -> Result<()> {
-    let cset = Chunks {
-        ssn: 0,
-        ppi: PayloadProtocolIdentifier::default(),
-        chunks: vec![
+    let cset = Chunks::new(
+        0,
+        PayloadProtocolIdentifier::default(),
+        vec![
             ChunkPayloadData {
                 tsn: 100,
                 beginning_fragment: true,
@@ -988,7 +984,7 @@ fn test_chunk_set_incomplete_chunk_set_no_contiguous_tsn() -> Result<()> {
                 ..Default::default()
             },
         ],
-    };
+    );
     assert!(
         !cset.is_complete(),
         "chunkSet not starting with incontiguous tsn cannot be complete"
