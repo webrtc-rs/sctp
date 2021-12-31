@@ -35,6 +35,7 @@ use timer::{RtoManager, Timer, TimerTable, ACK_INTERVAL};
 
 use bytes::Bytes;
 use fxhash::FxHashMap;
+use log::{debug, error, trace, warn};
 use rand::random;
 use std::collections::{HashMap, VecDeque};
 use std::net::{IpAddr, SocketAddr};
@@ -42,7 +43,6 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use thiserror::Error;
-use tracing::{debug, error, trace, warn};
 
 pub(crate) mod state;
 pub(crate) mod stats;
@@ -444,7 +444,7 @@ impl Association {
                 continue;
             }
             self.timers.set(timer, None);
-            trace!(timer = ?timer, "timeout");
+            trace!("{:?} timeout", timer);
 
             if timer == Timer::Ack {
                 self.on_ack_timeout();

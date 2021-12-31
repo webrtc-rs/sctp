@@ -23,6 +23,7 @@ use bytes::{Bytes, BytesMut};
 use futures_channel::mpsc;
 use futures_util::StreamExt;
 use fxhash::FxHashMap;
+use log::error;
 use proto::{
     self as proto, AssociationHandle, ClientConfig, ConnectError, DatagramEvent, ErrorCauseCode,
     ServerConfig,
@@ -88,7 +89,7 @@ impl Endpoint {
         let driver = EndpointDriver(rc.clone());
         tokio::spawn(async {
             if let Err(e) = driver.await {
-                tracing::error!("I/O error: {}", e);
+                error!("I/O error: {}", e);
             }
         });
         Ok((

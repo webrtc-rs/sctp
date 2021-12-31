@@ -22,13 +22,12 @@ use crate::param::param_outgoing_reset_request::ParamOutgoingResetRequest;
 use crate::param::param_reconfig_response::ParamReconfigResponse;
 use assert_matches::assert_matches;
 use lazy_static::lazy_static;
-use std::io::Write;
+use log::{info, trace};
 use std::net::Ipv6Addr;
 use std::ops::RangeFrom;
 use std::str::FromStr;
 use std::sync::Mutex;
-use std::{cmp, io, mem, net::UdpSocket, time::Duration};
-use tracing::{info, info_span, trace};
+use std::{cmp, mem, net::UdpSocket, time::Duration};
 
 lazy_static! {
     pub static ref SERVER_PORTS: Mutex<RangeFrom<u16>> = Mutex::new(4433..);
@@ -277,8 +276,6 @@ impl Pair {
     }
 
     pub fn drive_client(&mut self) {
-        let span = info_span!("client");
-        let _guard = span.enter();
         self.client.drive(self.time, self.server.addr);
         for x in self.client.outbound.drain(..) {
             if let Payload::RawEncode(contents) = x.payload {
@@ -297,8 +294,6 @@ impl Pair {
     }
 
     pub fn drive_server(&mut self) {
-        let span = info_span!("server");
-        let _guard = span.enter();
         self.server.drive(self.time, self.client.addr);
         for x in self.server.outbound.drain(..) {
             if let Payload::RawEncode(contents) = x.payload {
@@ -331,8 +326,6 @@ impl Pair {
 
     /// Just start connecting the client
     pub fn begin_connect(&mut self, config: ClientConfig) -> AssociationHandle {
-        let span = info_span!("client");
-        let _guard = span.enter();
         let (client_ch, client_conn) = self.client.connect(config, self.server.addr).unwrap();
         self.client.associations.insert(client_ch, client_conn);
         client_ch
@@ -371,29 +364,6 @@ impl Default for Pair {
     fn default() -> Self {
         Pair::new(Default::default(), server_config())
     }
-}
-
-struct TestWriter;
-
-impl Write for TestWriter {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        print!(
-            "{}",
-            std::str::from_utf8(buf).expect("tried to log invalid UTF-8")
-        );
-        Ok(buf.len())
-    }
-    fn flush(&mut self) -> io::Result<()> {
-        io::stdout().flush()
-    }
-}
-
-pub fn subscribe() -> tracing::subscriber::DefaultGuard {
-    let sub = tracing_subscriber::FmtSubscriber::builder()
-        .with_max_level(tracing::Level::TRACE)
-        .with_writer(|| TestWriter)
-        .finish();
-    tracing::subscriber::set_default(sub)
 }
 
 fn create_association_pair(

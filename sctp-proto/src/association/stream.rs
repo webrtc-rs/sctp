@@ -7,8 +7,8 @@ use crate::{ErrorCauseCode, Side};
 
 use crate::util::{ByteSlice, BytesArray, BytesSource};
 use bytes::Bytes;
+use log::{debug, error, trace};
 use std::fmt;
-use tracing::{debug, error, trace};
 
 /// Identifier for a stream within a particular association
 pub type StreamId = u16;

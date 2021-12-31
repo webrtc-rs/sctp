@@ -1,50 +1,33 @@
 use proto::{AssociationError, ReliabilityType, ServerConfig};
 use sctp_async::{Connecting, Endpoint, NewAssociation, Stream};
-use std::io;
-use std::io::Write;
 
 use anyhow::{anyhow, Result};
 use bytes::Bytes;
 use clap::{App, AppSettings, Arg};
 use futures_util::{StreamExt, TryFutureExt};
+use log::{error, info};
 use std::time::Duration;
-use tracing::{error, info, info_span};
-use tracing_futures::Instrument as _;
 
 // RUST_LOG=trace cargo run --color=always --package webrtc-sctp --example pong -- --host 0.0.0.0:5678
 
-struct TestWriter;
-
-impl Write for TestWriter {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        print!(
-            "{}",
-            std::str::from_utf8(buf).expect("tried to log invalid UTF-8")
-        );
-        Ok(buf.len())
-    }
-    fn flush(&mut self) -> io::Result<()> {
-        io::stdout().flush()
-    }
-}
-
-pub fn subscribe() -> tracing::subscriber::DefaultGuard {
-    let sub = tracing_subscriber::FmtSubscriber::builder()
-        .with_max_level(tracing::Level::TRACE)
-        .with_writer(|| TestWriter)
-        .finish();
-    tracing::subscriber::set_default(sub)
-}
+use std::io::Write;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let _guard = subscribe();
-    /*tracing::subscriber::set_global_default(
-        tracing_subscriber::FmtSubscriber::builder()
-            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-            .finish(),
-    )
-    .unwrap();*/
+    env_logger::Builder::new()
+        .format(|buf, record| {
+            writeln!(
+                buf,
+                "{}:{} [{}] {} - {}",
+                record.file().unwrap_or("unknown"),
+                record.line().unwrap_or(0),
+                record.level(),
+                chrono::Local::now().format("%H:%M:%S.%6f"),
+                record.args()
+            )
+        })
+        .filter(None, log::LevelFilter::Trace)
+        .init();
 
     let mut app = App::new("SCTP Pong")
         .version("0.1.0")
@@ -89,42 +72,33 @@ async fn main() -> Result<()> {
 
 async fn handle_association(conn: Connecting) -> Result<()> {
     let NewAssociation {
-        association,
         mut incoming_streams,
         ..
     } = conn.await?;
-    let span = info_span!(
-        "association",
-        remote = %association.remote_addr(),
-    );
-    async {
-        info!("established");
 
-        // Each stream initiated by the client constitutes a new request.
-        while let Some(stream) = incoming_streams.next().await {
-            let stream = match stream {
-                Err(AssociationError::ApplicationClosed { .. }) => {
-                    info!("association closed");
-                    return Ok(());
-                }
-                Err(e) => {
-                    return Err(e);
-                }
-                Ok(s) => s,
-            };
+    info!("established");
 
-            info!("incoming stream {}", stream.stream_identifier());
+    // Each stream initiated by the client constitutes a new request.
+    while let Some(stream) = incoming_streams.next().await {
+        let stream = match stream {
+            Err(AssociationError::ApplicationClosed { .. }) => {
+                info!("association closed");
+                return Ok(());
+            }
+            Err(e) => {
+                return Err(e.into());
+            }
+            Ok(s) => s,
+        };
 
-            tokio::spawn(
-                handle_stream(stream)
-                    .unwrap_or_else(move |e| error!("failed: {reason}", reason = e.to_string()))
-                    .instrument(info_span!("request")),
-            );
-        }
-        Ok(())
+        info!("incoming stream {}", stream.stream_identifier());
+
+        tokio::spawn(
+            handle_stream(stream)
+                .unwrap_or_else(move |e| error!("failed: {reason}", reason = e.to_string())),
+        );
     }
-    .instrument(span)
-    .await?;
+
     Ok(())
 }
 

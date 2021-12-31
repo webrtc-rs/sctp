@@ -25,7 +25,7 @@ futures-channel = "0.3.11"
 fxhash = "0.2.1"
 proto = { package = "sctp-proto", path = "../sctp-proto", version = "0.1.1" }
 thiserror = "1.0.21"
-tracing = "0.1.10"
+log = "0.4.14"
 tokio = { version = "1.15.0", features = ["rt", "time", "net"] }
 
 [dev-dependencies]
@@ -35,12 +35,12 @@ bencher = "0.1.5"
 directories-next = "2"
 futures-util = { version = "0.3.11", default-features = false, features = ["async-await-macro"] }
 rand = "0.8"
-clap = "2.34.0"
 tokio = { version = "1.15.0", features = ["rt", "rt-multi-thread", "time", "macros", "sync", "signal"] }
-tracing-subscriber = { version = "0.3.0", default-features = false, features = ["env-filter", "fmt", "ansi", "time", "local-time"] }
-tracing-futures = { version = "0.2.0", default-features = false, features = ["std-future"] }
 tokio-test = "0.4.2"
 lazy_static = "1.4.0"
+env_logger = "0.9.0"
+chrono = "0.4.19"
+clap = "2.34.0"
 
 [[example]]
 name = "ping"

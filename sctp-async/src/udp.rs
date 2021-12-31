@@ -6,9 +6,9 @@ use std::{
 };
 
 use futures_util::ready;
+use log::warn;
 use proto::{EcnCodepoint, Payload, Transmit};
 use tokio::io::ReadBuf;
-use tracing::warn;
 
 #[derive(Debug, Copy, Clone)]
 pub struct RecvMeta {

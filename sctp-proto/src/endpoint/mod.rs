@@ -22,10 +22,10 @@ use crate::{EcnCodepoint, Payload, Transmit};
 
 use bytes::Bytes;
 use fxhash::FxHashMap;
+use log::{debug, trace};
 use rand::{rngs::StdRng, SeedableRng};
 use slab::Slab;
 use thiserror::Error;
-use tracing::{debug, trace};
 
 /// The main entry point to the library
 ///
