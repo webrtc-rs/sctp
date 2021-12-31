@@ -531,7 +531,7 @@ impl Association {
     }
 
     /// The latest socket address for this Association's peer
-    pub fn remote_address(&self) -> SocketAddr {
+    pub fn remote_addr(&self) -> SocketAddr {
         self.remote_addr
     }
 

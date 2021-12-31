@@ -27,7 +27,7 @@ pub use proto::{
     ServerConfig, StreamId, Transmit, TransportConfig,
 };
 
-pub use crate::association::{Association, Connecting, IncomingStreams, NewAssociation, OpenBi};
+pub use crate::association::{Association, Connecting, IncomingStreams, NewAssociation, Opening};
 pub use crate::endpoint::{Endpoint, Incoming};
 pub use crate::stream::{
     Read, ReadChunk, ReadChunks, ReadError, ReadExact, ReadExactError, ReadToEnd, ReadToEndError,

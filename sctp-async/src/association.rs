@@ -114,7 +114,7 @@ impl Connecting {
     /// Will panic if called after `poll` has returned `Ready`.
     pub fn remote_address(&self) -> SocketAddr {
         let conn_ref: &AssociationRef = self.conn.as_ref().expect("used after yielding Ready");
-        conn_ref.lock("remote_address").inner.remote_address()
+        conn_ref.lock("remote_address").inner.remote_addr()
     }
 }
 
@@ -147,14 +147,14 @@ pub struct NewAssociation {
     /// Handle for interacting with the association
     pub association: Association,
     /// Bidirectional streams initiated by the peer, in the order they were opened
-    pub bi_streams: IncomingStreams,
+    pub incoming_streams: IncomingStreams,
 }
 
 impl NewAssociation {
     fn new(conn: AssociationRef) -> Self {
         Self {
             association: Association(conn.clone()),
-            bi_streams: IncomingStreams(conn),
+            incoming_streams: IncomingStreams(conn),
         }
     }
 }
@@ -229,12 +229,12 @@ impl Association {
     /// Streams are cheap and instantaneous to open unless blocked by flow control. As a
     /// consequence, the peer won't be notified that a stream has been opened until the stream is
     /// actually used.
-    pub fn open_bi(
+    pub fn open_stream(
         &self,
         stream_identifier: StreamId,
         default_payload_type: PayloadProtocolIdentifier,
-    ) -> OpenBi {
-        OpenBi {
+    ) -> Opening {
+        Opening {
             conn: self.0.clone(),
             state: broadcast::State::default(),
             stream_identifier,
@@ -266,8 +266,8 @@ impl Association {
     ///
     /// If `ServerConfig::migration` is `true`, clients may change addresses at will, e.g. when
     /// switching to a cellular internet association.
-    pub fn remote_address(&self) -> SocketAddr {
-        self.0.lock("remote_address").inner.remote_address()
+    pub fn remote_addr(&self) -> SocketAddr {
+        self.0.lock("remote_address").inner.remote_addr()
     }
 
     /// The local IP address which was used when the peer established
@@ -342,14 +342,14 @@ impl futures_util::stream::Stream for IncomingStreams {
 
 /// A future that will resolve into an opened outgoing bidirectional stream
 #[must_use = "futures/streams/sinks do nothing unless you `.await` or poll them"]
-pub struct OpenBi {
+pub struct Opening {
     conn: AssociationRef,
     state: broadcast::State,
     stream_identifier: StreamId,
     default_payload_type: PayloadProtocolIdentifier,
 }
 
-impl Future for OpenBi {
+impl Future for Opening {
     type Output = Result<Stream, AssociationError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
