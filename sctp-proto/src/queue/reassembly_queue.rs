@@ -83,7 +83,7 @@ impl Chunks {
         while self.index < self.chunks.len() {
             let to_copy = self.chunks[self.index].user_data[self.offset..].len();
             let n = std::cmp::min(to_copy, max_length - n_written);
-            buf.copy_from_slice(&self.chunks[self.index].user_data[self.offset..self.offset + n]);
+            buf.extend_from_slice(&self.chunks[self.index].user_data[self.offset..self.offset + n]);
             n_written += n;
             if n < to_copy {
                 self.offset += n;

@@ -1,5 +1,7 @@
 use proto::{ClientConfig, PayloadProtocolIdentifier, ReliabilityType};
 use sctp_async::{Endpoint, NewAssociation};
+use std::io;
+use std::io::Write;
 
 use anyhow::{anyhow, Result};
 use bytes::Bytes;
@@ -8,14 +10,38 @@ use std::time::Instant;
 
 // RUST_LOG=trace cargo run --color=always --package webrtc-sctp --example ping -- --server 0.0.0.0:5678
 
+struct TestWriter;
+
+impl Write for TestWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        print!(
+            "{}",
+            std::str::from_utf8(buf).expect("tried to log invalid UTF-8")
+        );
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        io::stdout().flush()
+    }
+}
+
+pub fn subscribe() -> tracing::subscriber::DefaultGuard {
+    let sub = tracing_subscriber::FmtSubscriber::builder()
+        .with_max_level(tracing::Level::TRACE)
+        .with_writer(|| TestWriter)
+        .finish();
+    tracing::subscriber::set_default(sub)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing::subscriber::set_global_default(
+    let _guard = subscribe();
+    /*tracing::subscriber::set_global_default(
         tracing_subscriber::FmtSubscriber::builder()
             .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
             .finish(),
     )
-    .unwrap();
+    .unwrap();*/
 
     let mut app = App::new("SCTP Ping")
         .version("0.1.0")
