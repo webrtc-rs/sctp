@@ -417,7 +417,12 @@ impl Association {
         if contents.is_empty() {
             None
         } else {
-            trace!("sending {} datagrams", contents.len());
+            trace!(
+                "[{}] sending {} bytes (total {} datagrams)",
+                self.side,
+                contents.iter().fold(0, |l, c| l + c.len()),
+                contents.len()
+            );
             Some(Transmit {
                 now,
                 remote: self.remote_addr,
@@ -444,7 +449,7 @@ impl Association {
                 continue;
             }
             self.timers.set(timer, None);
-            trace!("{:?} timeout", timer);
+            //trace!("{:?} timeout", timer);
 
             if timer == Timer::Ack {
                 self.on_ack_timeout();
@@ -475,6 +480,12 @@ impl Association {
                 }*/
 
                 if let Payload::PartialDecode(partial_decode) = transmit.payload {
+                    debug!(
+                        "[{}] recving {} bytes",
+                        self.side,
+                        COMMON_HEADER_SIZE as usize + partial_decode.remaining.len()
+                    );
+
                     let pkt = match partial_decode.finish() {
                         Ok(p) => p,
                         Err(err) => {
@@ -1126,13 +1137,13 @@ impl Association {
     }
 
     fn handle_data(&mut self, d: &ChunkPayloadData) -> Result<Vec<Packet>> {
-        /*trace!(
+        trace!(
             "[{}] DATA: tsn={} immediateSack={} len={}",
             self.side,
             d.tsn,
             d.immediate_sack,
             d.user_data.len()
-        );*/
+        );
         self.stats.inc_datas();
 
         let can_push = self.payload_queue.can_push(d, self.peer_last_tsn);
@@ -1172,7 +1183,11 @@ impl Association {
             if let Some(s) = self.streams.get_mut(&d.stream_identifier) {
                 self.events.push_back(Event::DatagramReceived);
                 s.handle_data(d);
+            } else {
+                debug!("[{}] stream_handle_data {}", self.side, stream_handle_data);
             }
+        } else {
+            debug!("[{}] stream_handle_data {}", self.side, stream_handle_data);
         }
 
         self.handle_peer_last_tsn_and_acknowledgement(immediate_sack)
@@ -1884,6 +1899,7 @@ impl Association {
 
         if accept {
             self.stream_queue.push_back(stream_identifier);
+            self.events.push_back(Event::Stream(StreamEvent::Opened));
         }
 
         self.streams.insert(stream_identifier, s);
@@ -2559,7 +2575,7 @@ impl Association {
                 &self.streams,
             );
 
-            /*trace!(
+            trace!(
                 "[{}] sending ppi={} tsn={} ssn={} sent={} len={} ({},{})",
                 self.side,
                 c.payload_type as u32,
@@ -2569,7 +2585,7 @@ impl Association {
                 c.user_data.len(),
                 c.beginning_fragment,
                 c.ending_fragment
-            );*/
+            );
 
             self.inflight_queue.push_no_check(c.clone());
 

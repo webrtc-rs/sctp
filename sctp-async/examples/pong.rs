@@ -86,6 +86,7 @@ async fn handle_association(conn: Connecting) -> Result<()> {
                 return Ok(());
             }
             Err(e) => {
+                info!("association error {}", e);
                 return Err(e.into());
             }
             Ok(s) => s,

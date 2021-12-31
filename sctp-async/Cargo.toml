@@ -14,7 +14,7 @@ workspace = ".."
 readme = "../README.md"
 
 [features]
-default = []
+default = ["lock_tracking"]
 # Records how long locks are held, and warns if they are held >= 1ms
 lock_tracking = []
 

@@ -6,11 +6,11 @@ use std::{
 #[cfg(feature = "lock_tracking")]
 mod tracking {
     use super::*;
+    use log::warn;
     use std::{
         collections::VecDeque,
         time::{Duration, Instant},
     };
-    use tracing::warn;
 
     #[derive(Debug)]
     struct Inner<T> {
@@ -43,7 +43,7 @@ mod tracking {
         /// Acquires the lock for a certain purpose
         ///
         /// The purpose will be recorded in the list of last lock owners
-        pub fn lock(&self, purpose: &'static str) -> MutexGuard<T> {
+        pub fn lock(&self, purpose: &'static str) -> MutexGuard<'_, T> {
             let now = Instant::now();
             let guard = self.inner.lock().unwrap();
 

@@ -110,9 +110,9 @@ impl Connecting {
     /// The peer's UDP address.
     ///
     /// Will panic if called after `poll` has returned `Ready`.
-    pub fn remote_address(&self) -> SocketAddr {
+    pub fn remote_addr(&self) -> SocketAddr {
         let conn_ref: &AssociationRef = self.conn.as_ref().expect("used after yielding Ready");
-        conn_ref.lock("remote_address").inner.remote_addr()
+        conn_ref.lock("remote_addr").inner.remote_addr()
     }
 }
 
@@ -262,7 +262,7 @@ impl Association {
     /// If `ServerConfig::migration` is `true`, clients may change addresses at will, e.g. when
     /// switching to a cellular internet association.
     pub fn remote_addr(&self) -> SocketAddr {
-        self.0.lock("remote_address").inner.remote_addr()
+        self.0.lock("remote_addr").inner.remote_addr()
     }
 
     /// The local IP address which was used when the peer established
@@ -318,17 +318,22 @@ impl futures_util::stream::Stream for IncomingStreams {
     type Item = Result<Stream, AssociationError>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let mut conn = self.0.lock("IncomingBiStreams::poll_next");
+        //debug!("IncomingStreams::poll_next..");
+        let mut conn = self.0.lock("IncomingStreams::poll_next");
         if let Some(x) = conn.inner.accept_stream() {
             let id = x.stream_identifier();
+            //debug!("IncomingStreams::poll_next::accept_stream {}", id);
             conn.wake(); // To send additional stream ID credit
             mem::drop(conn); // Release the lock so clone can take it
             Poll::Ready(Some(Ok(Stream::new(self.0.clone(), id))))
         } else if let Some(AssociationError::LocallyClosed) = conn.error {
+            //debug!("IncomingStreams::poll_next::LocallyClosed");
             Poll::Ready(None)
         } else if let Some(ref e) = conn.error {
+            //debug!("IncomingStreams::poll_next::error");
             Poll::Ready(Some(Err(e.clone())))
         } else {
+            //debug!("IncomingStreams::poll_next::other");
             conn.incoming_streams_reader = Some(cx.waker().clone());
             Poll::Pending
         }
@@ -349,7 +354,7 @@ impl Future for Opening {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
-        let mut conn = this.conn.lock("OpenBi::next");
+        let mut conn = this.conn.lock("Opening::next");
         if let Some(ref e) = conn.error {
             return Poll::Ready(Err(e.clone()));
         }
