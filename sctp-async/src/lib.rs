@@ -23,8 +23,15 @@ mod udp;
 mod work_limiter;
 
 pub use proto::{
-    AssociationError, ClientConfig, ConnectError, EndpointConfig, ErrorCauseCode, ServerConfig,
-    StreamId, Transmit, TransportConfig,
+    AssociationError, Chunk, ClientConfig, ConnectError, EndpointConfig, ErrorCauseCode,
+    ServerConfig, StreamId, Transmit, TransportConfig,
+};
+
+pub use crate::association::{Association, Connecting, IncomingStreams, NewAssociation, OpenBi};
+pub use crate::endpoint::{Endpoint, Incoming};
+pub use crate::stream::{
+    Read, ReadChunk, ReadChunks, ReadError, ReadExact, ReadExactError, ReadToEnd, ReadToEndError,
+    StoppedError, Stream, WriteError,
 };
 
 #[derive(Debug)]

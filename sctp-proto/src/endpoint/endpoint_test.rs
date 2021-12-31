@@ -81,7 +81,7 @@ struct TestEndpoint {
     delayed: VecDeque<Transmit>,
     inbound: VecDeque<(Instant, Option<EcnCodepoint>, Bytes)>,
     accepted: Option<AssociationHandle>,
-    connections: HashMap<AssociationHandle, Association>,
+    associations: HashMap<AssociationHandle, Association>,
     conn_events: HashMap<AssociationHandle, VecDeque<AssociationEvent>>,
 }
 
@@ -101,7 +101,7 @@ impl TestEndpoint {
             delayed: VecDeque::new(),
             inbound: VecDeque::new(),
             accepted: None,
-            connections: HashMap::default(),
+            associations: HashMap::default(),
             conn_events: HashMap::default(),
         }
     }
@@ -124,7 +124,7 @@ impl TestEndpoint {
             {
                 match event {
                     DatagramEvent::NewAssociation(conn) => {
-                        self.connections.insert(ch, conn);
+                        self.associations.insert(ch, conn);
                         self.accepted = Some(ch);
                     }
                     DatagramEvent::AssociationEvent(event) => {
@@ -142,7 +142,7 @@ impl TestEndpoint {
         }
 
         let mut endpoint_events: Vec<(AssociationHandle, EndpointEvent)> = vec![];
-        for (ch, conn) in self.connections.iter_mut() {
+        for (ch, conn) in self.associations.iter_mut() {
             if self.timeout.map_or(false, |x| x <= now) {
                 self.timeout = None;
                 conn.handle_timeout(now);
@@ -166,7 +166,7 @@ impl TestEndpoint {
 
         for (ch, event) in endpoint_events {
             if let Some(event) = self.handle_event(ch, event) {
-                if let Some(conn) = self.connections.get_mut(&ch) {
+                if let Some(conn) = self.associations.get_mut(&ch) {
                     conn.handle_event(event);
                 }
             }
@@ -179,7 +179,7 @@ impl TestEndpoint {
     }
 
     fn is_idle(&self) -> bool {
-        self.connections.values().all(|x| x.is_idle())
+        self.associations.values().all(|x| x.is_idle())
     }
 
     pub fn delay_outbound(&mut self) {
@@ -334,7 +334,7 @@ impl Pair {
         let span = info_span!("client");
         let _guard = span.enter();
         let (client_ch, client_conn) = self.client.connect(config, self.server.addr).unwrap();
-        self.client.connections.insert(client_ch, client_conn);
+        self.client.associations.insert(client_ch, client_conn);
         client_ch
     }
 
@@ -351,7 +351,7 @@ impl Pair {
     }
 
     pub fn client_conn_mut(&mut self, ch: AssociationHandle) -> &mut Association {
-        self.client.connections.get_mut(&ch).unwrap()
+        self.client.associations.get_mut(&ch).unwrap()
     }
 
     pub fn client_stream(&mut self, ch: AssociationHandle, si: u16) -> Result<Stream<'_>> {
@@ -359,7 +359,7 @@ impl Pair {
     }
 
     pub fn server_conn_mut(&mut self, ch: AssociationHandle) -> &mut Association {
-        self.server.connections.get_mut(&ch).unwrap()
+        self.server.associations.get_mut(&ch).unwrap()
     }
 
     pub fn server_stream(&mut self, ch: AssociationHandle, si: u16) -> Result<Stream<'_>> {

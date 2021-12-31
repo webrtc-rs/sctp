@@ -38,20 +38,20 @@ pub struct Endpoint {
     /// Identifies associations based on the INIT Dst AID the peer utilized
     ///
     /// Uses a standard `HashMap` to protect against hash collision attacks.
-    connection_ids_init: HashMap<AssociationId, AssociationHandle>,
+    association_ids_init: HashMap<AssociationId, AssociationHandle>,
     /// Identifies associations based on locally created CIDs
     ///
     /// Uses a cheaper hash function since keys are locally created
-    connection_ids: FxHashMap<AssociationId, AssociationHandle>,
+    association_ids: FxHashMap<AssociationId, AssociationHandle>,
 
-    connections: Slab<AssociationMeta>,
+    associations: Slab<AssociationMeta>,
     local_cid_generator: Box<dyn AssociationIdGenerator>,
     config: Arc<EndpointConfig>,
     server_config: Option<Arc<ServerConfig>>,
     /// Whether incoming associations should be unconditionally rejected by a server
     ///
     /// Equivalent to a `ServerConfig.accept_buffer` of `0`, but can be changed after the endpoint is constructed.
-    reject_new_connections: bool,
+    reject_new_associations: bool,
 }
 
 impl fmt::Debug for Endpoint {
@@ -59,12 +59,12 @@ impl fmt::Debug for Endpoint {
         fmt.debug_struct("Endpoint<T>")
             .field("rng", &self.rng)
             .field("transmits", &self.transmits)
-            .field("connection_ids_initial", &self.connection_ids_init)
-            .field("connection_ids", &self.connection_ids)
-            .field("connections", &self.connections)
+            .field("association_ids_initial", &self.association_ids_init)
+            .field("association_ids", &self.association_ids)
+            .field("associations", &self.associations)
             .field("config", &self.config)
             .field("server_config", &self.server_config)
-            .field("reject_new_connections", &self.reject_new_connections)
+            .field("reject_new_associations", &self.reject_new_associations)
             .finish()
     }
 }
@@ -77,11 +77,11 @@ impl Endpoint {
         Self {
             rng: StdRng::from_entropy(),
             transmits: VecDeque::new(),
-            connection_ids_init: HashMap::default(),
-            connection_ids: FxHashMap::default(),
-            connections: Slab::new(),
+            association_ids_init: HashMap::default(),
+            association_ids: FxHashMap::default(),
+            associations: Slab::new(),
             local_cid_generator: (config.aid_generator_factory.as_ref())(),
-            reject_new_connections: false,
+            reject_new_associations: false,
             config,
             server_config,
         }
@@ -100,7 +100,7 @@ impl Endpoint {
 
     /// Process `EndpointEvent`s emitted from related `Association`s
     ///
-    /// In turn, processing this event may return a `ConnectionEvent` for the same `Association`.
+    /// In turn, processing this event may return a `AssociationEvent` for the same `Association`.
     pub fn handle_event(
         &mut self,
         ch: AssociationHandle,
@@ -108,10 +108,10 @@ impl Endpoint {
     ) -> Option<AssociationEvent> {
         match event.0 {
             EndpointEventInner::Drained => {
-                let conn = self.connections.remove(ch.0);
-                self.connection_ids_init.remove(&conn.init_cid);
+                let conn = self.associations.remove(ch.0);
+                self.association_ids_init.remove(&conn.init_cid);
                 for cid in conn.loc_cids.values() {
-                    self.connection_ids.remove(cid);
+                    self.association_ids.remove(cid);
                 }
             }
         }
@@ -140,12 +140,12 @@ impl Endpoint {
         //
         let dst_cid = partial_decode.common_header.verification_tag;
         let known_ch = if dst_cid > 0 {
-            self.connection_ids.get(&dst_cid).cloned()
+            self.association_ids.get(&dst_cid).cloned()
         } else {
             //TODO: improve INIT handling for DoS attack
             if partial_decode.first_chunk_type == CT_INIT {
                 if let Some(dst_cid) = partial_decode.initiate_tag {
-                    self.connection_ids.get(&dst_cid).cloned()
+                    self.association_ids.get(&dst_cid).cloned()
                 } else {
                     None
                 }
@@ -192,7 +192,7 @@ impl Endpoint {
         let remote_aid = RandomAssociationIdGenerator::new().generate_aid();
         let local_aid = self.new_aid();
 
-        let (ch, conn) = self.add_connection(
+        let (ch, conn) = self.add_association(
             remote_aid,
             local_aid,
             remote,
@@ -207,7 +207,7 @@ impl Endpoint {
     fn new_aid(&mut self) -> AssociationId {
         loop {
             let aid = self.local_cid_generator.generate_aid();
-            if !self.connection_ids.contains_key(&aid) {
+            if !self.association_ids.contains_key(&aid) {
                 break aid;
             }
         }
@@ -230,11 +230,11 @@ impl Endpoint {
 
         let server_config = self.server_config.as_ref().unwrap();
 
-        if self.connections.len() >= server_config.concurrent_associations as usize
-            || self.reject_new_connections
+        if self.associations.len() >= server_config.concurrent_associations as usize
+            || self.reject_new_associations
             || self.is_full()
         {
-            debug!("refusing connection");
+            debug!("refusing association");
             //TODO: self.initial_close();
             return None;
         }
@@ -245,7 +245,7 @@ impl Endpoint {
         let remote_aid = *partial_decode.initiate_tag.as_ref().unwrap();
         let local_aid = self.new_aid();
 
-        let (ch, mut conn) = self.add_connection(
+        let (ch, mut conn) = self.add_association(
             remote_aid,
             local_aid,
             remote,
@@ -268,7 +268,7 @@ impl Endpoint {
         Some((ch, conn))
     }
 
-    fn add_connection(
+    fn add_association(
         &mut self,
         remote_aid: AssociationId,
         local_aid: AssociationId,
@@ -287,7 +287,7 @@ impl Endpoint {
             now,
         );
 
-        let id = self.connections.insert(AssociationMeta {
+        let id = self.associations.insert(AssociationMeta {
             init_cid: remote_aid,
             cids_issued: 0,
             loc_cids: iter::once((0, local_aid)).collect(),
@@ -295,14 +295,14 @@ impl Endpoint {
         });
 
         let ch = AssociationHandle(id);
-        self.connection_ids.insert(local_aid, ch);
+        self.association_ids.insert(local_aid, ch);
 
         (ch, conn)
     }
 
     /// Unconditionally reject future incoming associations
-    pub fn reject_new_connections(&mut self) {
-        self.reject_new_connections = true;
+    pub fn reject_new_associations(&mut self) {
+        self.reject_new_associations = true;
     }
 
     /// Access the configuration used by this endpoint
@@ -312,7 +312,7 @@ impl Endpoint {
 
     /// Whether we've used up 3/4 of the available AID space
     fn is_full(&self) -> bool {
-        (((u32::MAX >> 1) + (u32::MAX >> 2)) as usize) < self.connection_ids.len()
+        (((u32::MAX >> 1) + (u32::MAX >> 2)) as usize) < self.association_ids.len()
     }
 }
 

@@ -13,7 +13,7 @@ use bytes::Bytes;
 use std::fmt;
 use tracing::{debug, error, trace};
 
-/// Identifier for a stream within a particular connection
+/// Identifier for a stream within a particular association
 pub type StreamId = u16;
 
 /// Application events about streams
@@ -147,7 +147,7 @@ impl<'a> Stream<'a> {
     ///
     /// Returns the number of bytes and chunks successfully written.
     /// Note that this method might also write a partial chunk. In this case
-    /// [`Written::chunks`] will not count this chunk as fully written. However
+    /// it will not count this chunk as fully written. However
     /// the chunk will be advanced and contain only non-written data after the call.
     pub fn write_chunks(&mut self, data: &mut [Bytes]) -> Result<usize> {
         self.write_source(

@@ -1,3 +1,4 @@
+/// Association statistics
 #[derive(Default, Debug, Copy, Clone)]
 pub struct AssociationStats {
     n_datas: u64,

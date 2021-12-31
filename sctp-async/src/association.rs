@@ -29,7 +29,7 @@ use crate::{
     AssociationEvent, EndpointEvent,
 };
 
-/// In-progress connection attempt future
+/// In-progress association attempt future
 #[derive(Debug)]
 #[must_use = "futures/streams/sinks do nothing unless you `.await` or poll them"]
 pub struct Connecting {
@@ -68,7 +68,7 @@ impl Connecting {
     }
 
     /// The local IP address which was used when the peer established
-    /// the connection
+    /// the association
     ///
     /// This can be different from the address the endpoint is bound to, in case
     /// the endpoint is bound to a wildcard address like `0.0.0.0` or `::`.
@@ -102,7 +102,7 @@ impl Future for Connecting {
                 Err(inner
                     .error
                     .clone()
-                    .expect("connected signaled without connection success or error"))
+                    .expect("connected signaled without association success or error"))
             }
         })
     }
@@ -121,10 +121,10 @@ impl Connecting {
 /// Components of a newly established association
 ///
 /// All fields of this struct, in addition to any other handles constructed later, must be dropped
-/// for a connection to be implicitly closed. If the `NewConnection` is stored in a long-lived
+/// for a association to be implicitly closed. If the `NewAssociation` is stored in a long-lived
 /// variable, moving individual fields won't cause remaining unused fields to be dropped, even with
 /// pattern-matching. The easiest way to ensure unused fields are dropped is to pattern-match on the
-/// variable wrapped in brackets, which forces the entire `NewConnection` to be moved out of the
+/// variable wrapped in brackets, which forces the entire `NewAssociation` to be moved out of the
 /// variable and into a temporary, ensuring all unused fields are dropped at the end of the
 /// statement:
 ///
@@ -133,7 +133,7 @@ impl Connecting {
     doc = "```rust
 # use quinn::NewAssociation;
 # fn dummy(new_association: NewAssociation) {
-let NewAssociation { connection, .. } = { new_connection };
+let NewAssociation { association, .. } = { new_association };
 # }
 ```"
 )]
@@ -145,7 +145,7 @@ let NewAssociation { connection, .. } = { new_connection };
 #[non_exhaustive]
 pub struct NewAssociation {
     /// Handle for interacting with the association
-    pub connection: Association,
+    pub association: Association,
     /// Bidirectional streams initiated by the peer, in the order they were opened
     pub bi_streams: IncomingStreams,
 }
@@ -153,23 +153,23 @@ pub struct NewAssociation {
 impl NewAssociation {
     fn new(conn: AssociationRef) -> Self {
         Self {
-            connection: Association(conn.clone()),
+            association: Association(conn.clone()),
             bi_streams: IncomingStreams(conn),
         }
     }
 }
 
-/// A future that drives protocol logic for a connection
+/// A future that drives protocol logic for a association
 ///
-/// This future handles the protocol logic for a single connection, routing events from the
+/// This future handles the protocol logic for a single association, routing events from the
 /// `Association` API object to the `Endpoint` task and the related stream-related interfaces.
 /// It also keeps track of outstanding timeouts for the `Association`.
 ///
-/// If the connection encounters an error condition, this future will yield an error. It will
-/// terminate (yielding `Ok(())`) if the connection was closed without error. Unlike other
-/// connection-related futures, this waits for the draining period to complete to ensure that
+/// If the association encounters an error condition, this future will yield an error. It will
+/// terminate (yielding `Ok(())`) if the association was closed without error. Unlike other
+/// association-related futures, this waits for the draining period to complete to ensure that
 /// packets still in flight from the peer are handled gracefully.
-#[must_use = "connection drivers must be spawned for their connections to function"]
+#[must_use = "association drivers must be spawned for their associations to function"]
 #[derive(Debug)]
 struct AssociationDriver(AssociationRef);
 
@@ -196,7 +196,7 @@ impl Future for AssociationDriver {
 
         if !conn.inner.is_drained() {
             if keep_going {
-                // If the connection hasn't processed all tasks, schedule it again
+                // If the association hasn't processed all tasks, schedule it again
                 cx.waker().wake_by_ref();
             } else {
                 conn.driver = Some(cx.waker().clone());
@@ -204,7 +204,7 @@ impl Future for AssociationDriver {
             return Poll::Pending;
         }
         if conn.error.is_none() {
-            unreachable!("drained connections always have an error");
+            unreachable!("drained associations always have an error");
         }
         Poll::Ready(())
     }
@@ -212,12 +212,12 @@ impl Future for AssociationDriver {
 
 /// A SCTP association.
 ///
-/// If all references to a connection (including every clone of the `Association` handle, streams of
-/// incoming streams, and the various stream types) have been dropped, then the connection will be
+/// If all references to a association (including every clone of the `Association` handle, streams of
+/// incoming streams, and the various stream types) have been dropped, then the association will be
 /// automatically closed with an `error_code` of 0 and an empty `reason`. You can also close the
-/// connection explicitly by calling [`Association::close()`].
+/// association explicitly by calling [`Association::close()`].
 ///
-/// May be cloned to obtain another handle to the same connection.
+/// May be cloned to obtain another handle to the same association.
 ///
 /// [`Association::close()`]: Association::close
 #[derive(Debug)]
@@ -242,21 +242,21 @@ impl Association {
         }
     }
 
-    /// Close the connection immediately.
+    /// Close the association immediately.
     ///
-    /// Pending operations will fail immediately with [`ConnectionError::LocallyClosed`]. Delivery
+    /// Pending operations will fail immediately with [`AssociationError::LocallyClosed`]. Delivery
     /// of data on unfinished streams is not guaranteed, so the application must call this only
     /// when all important communications have been completed, e.g. by calling [`finish`] on
-    /// outstanding [`SendStream`]s and waiting for the resulting futures to complete.
+    /// outstanding [`Stream`]s and waiting for the resulting futures to complete.
     ///
     /// `error_code` and `reason` are not interpreted, and are provided directly to the peer.
     ///
     /// `reason` will be truncated to fit in a single packet with overhead; to improve odds that it
     /// is preserved in full, it should be kept under 1KiB.
     ///
-    /// [`ConnectionError::LocallyClosed`]: crate::ConnectionError::LocallyClosed
-    /// [`finish`]: crate::SendStream::finish
-    /// [`SendStream`]: crate::SendStream
+    /// [`AssociationError::LocallyClosed`]: crate::AssociationError::LocallyClosed
+    /// [`finish`]: crate::Stream::finish
+    /// [`Stream`]: crate::Stream
     pub fn close(&self, error_code: ErrorCauseCode, reason: &[u8]) {
         let conn = &mut *self.0.lock("close");
         conn.close(error_code, Bytes::copy_from_slice(reason));
@@ -265,13 +265,13 @@ impl Association {
     /// The peer's UDP address
     ///
     /// If `ServerConfig::migration` is `true`, clients may change addresses at will, e.g. when
-    /// switching to a cellular internet connection.
+    /// switching to a cellular internet association.
     pub fn remote_address(&self) -> SocketAddr {
         self.0.lock("remote_address").inner.remote_address()
     }
 
     /// The local IP address which was used when the peer established
-    /// the connection
+    /// the association
     ///
     /// This can be different from the address the endpoint is bound to, in case
     /// the endpoint is bound to a wildcard address like `0.0.0.0` or `::`.
@@ -288,7 +288,7 @@ impl Association {
         self.0.lock("local_ip").inner.local_ip()
     }
 
-    /// Current best estimate of this connection's latency (round-trip-time)
+    /// Current best estimate of this association's latency (round-trip-time)
     pub fn rtt(&self) -> Duration {
         self.0.lock("rtt").inner.rtt()
     }
@@ -298,10 +298,10 @@ impl Association {
         self.0.lock("stats").inner.stats()
     }
 
-    /// A stable identifier for this connection
+    /// A stable identifier for this association
     ///
-    /// Peer addresses and connection IDs can change, but this value will remain
-    /// fixed for the lifetime of the connection.
+    /// Peer addresses and association IDs can change, but this value will remain
+    /// fixed for the lifetime of the association.
     pub fn stable_id(&self) -> usize {
         self.0.stable_id()
     }
@@ -428,7 +428,7 @@ impl Drop for AssociationRef {
             if x == 0 && !conn.inner.is_closed() {
                 // If the driver is alive, it's just it and us, so we'd better shut it down. If it's
                 // not, we can't do any harm. If there were any streams being opened, then either
-                // the connection will be closed for an unrelated reason or a fresh reference will
+                // the association will be closed for an unrelated reason or a fresh reference will
                 // be constructed for the newly opened stream.
                 conn.implicit_close();
             }
@@ -461,7 +461,7 @@ pub struct AssociationInner {
     datagram_reader: Option<Waker>,
     pub(crate) finishing: FxHashMap<StreamId, oneshot::Sender<Option<WriteError>>>,
     pub(crate) stopped: FxHashMap<StreamId, Waker>,
-    /// Always set to Some before the connection becomes drained
+    /// Always set to Some before the association becomes drained
     pub(crate) error: Option<AssociationError>,
     /// Number of live handles that can be used to initiate or handle I/O; excludes the driver
     ref_count: usize,
@@ -534,7 +534,7 @@ impl AssociationInner {
                         let _ = x.send(());
                     }
                 }
-                ConnectionLost { reason } => {
+                AssociationLost { reason } => {
                     self.terminate(reason);
                 }
                 Stream(StreamEvent::Writable { id }) => {
@@ -626,7 +626,7 @@ impl AssociationInner {
             .as_mut();
         if delay.poll(cx).is_pending() {
             // Since there wasn't a timeout event, there is nothing new
-            // for the connection to do
+            // for the association to do
             return false;
         }
 
@@ -644,7 +644,7 @@ impl AssociationInner {
         }
     }
 
-    /// Used to wake up all blocked futures when the connection becomes closed for any reason
+    /// Used to wake up all blocked futures when the association becomes closed for any reason
     fn terminate(&mut self, reason: AssociationError) {
         self.error = Some(reason.clone());
         if let Some(x) = self.on_buffered_amount_low.take() {
@@ -664,7 +664,7 @@ impl AssociationInner {
             x.wake();
         }
         for (_, x) in self.finishing.drain() {
-            let _ = x.send(Some(WriteError::ConnectionLost(reason.clone())));
+            let _ = x.send(Some(WriteError::AssociationLost(reason.clone())));
         }
         if let Some(x) = self.on_connected.take() {
             let _ = x.send(());
@@ -714,15 +714,15 @@ pub enum SendDatagramError {
     /// Datagram support is disabled locally
     #[error("datagram support disabled")]
     Disabled,
-    /// The datagram is larger than the connection can currently accommodate
+    /// The datagram is larger than the association can currently accommodate
     ///
     /// Indicates that the path MTU minus overhead or the limit advertised by the peer has been
     /// exceeded.
     #[error("datagram too large")]
     TooLarge,
-    /// The connection was lost
-    #[error("connection lost")]
-    ConnectionLost(#[from] AssociationError),
+    /// The association was lost
+    #[error("association lost")]
+    AssociationLost(#[from] AssociationError),
 }
 
 /// The maximum amount of datagrams which will be produced in a single `drive_transmit` call

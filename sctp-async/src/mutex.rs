@@ -52,7 +52,7 @@ mod tracking {
 
             if elapsed > Duration::from_millis(1) {
                 warn!(
-                    "Locking the connection for {} took {:?}. Last owners: {:?}",
+                    "Locking the association for {} took {:?}. Last owners: {:?}",
                     purpose, elapsed, guard.last_lock_owner
                 );
             }
@@ -81,7 +81,7 @@ mod tracking {
 
             if duration > Duration::from_millis(1) {
                 warn!(
-                    "Utilizing the connection for {} took {:?}",
+                    "Utilizing the association for {} took {:?}",
                     self.purpose, duration
                 );
             }

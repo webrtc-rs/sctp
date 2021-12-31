@@ -30,8 +30,8 @@ use proto::{
 
 /// A SCTP endpoint.
 ///
-/// An endpoint corresponds to a single UDP socket, may host many connections, and may act as both
-/// client and server for different connections.
+/// An endpoint corresponds to a single UDP socket, may host many associations, and may act as both
+/// client and server for different associations.
 ///
 /// May be cloned to obtain another handle to the same endpoint.
 #[derive(Debug, Clone)]
@@ -41,7 +41,7 @@ pub struct Endpoint {
 }
 
 impl Endpoint {
-    /// Helper to construct an endpoint for use with outgoing connections only
+    /// Helper to construct an endpoint for use with outgoing associations only
     ///
     /// Must be called from within a tokio runtime context. Note that `addr` is the *local* address
     /// to bind to, which should usually be a wildcard address like `0.0.0.0:0` or `[::]:0`, which
@@ -57,7 +57,7 @@ impl Endpoint {
         Ok(Self::new(EndpointConfig::default(), None, socket)?.0)
     }
 
-    /// Helper to construct an endpoint for use with both incoming and outgoing connections
+    /// Helper to construct an endpoint for use with both incoming and outgoing associations
     ///
     /// Must be called from within a tokio runtime context.
     ///
@@ -106,7 +106,7 @@ impl Endpoint {
     }
 
     /// Connect to a remote endpoint   
-    /// May fail immediately due to configuration errors, or in the future if the connection could
+    /// May fail immediately due to configuration errors, or in the future if the association could
     /// not be established.
     pub fn connect(&self, addr: SocketAddr) -> Result<Connecting, ConnectError> {
         let config = match &self.default_client_config {
@@ -140,12 +140,12 @@ impl Endpoint {
             addr
         };
         let (ch, conn) = endpoint.inner.connect(config, addr)?;
-        Ok(endpoint.connections.insert(ch, conn))
+        Ok(endpoint.associations.insert(ch, conn))
     }
 
-    /// Replace the server configuration, affecting new incoming connections only
+    /// Replace the server configuration, affecting new incoming associations only
     ///
-    /// Useful for e.g. refreshing TLS certificates without disrupting existing connections.
+    /// Useful for e.g. refreshing TLS certificates without disrupting existing associations.
     pub fn set_server_config(&self, server_config: Option<ServerConfig>) {
         self.inner
             .lock()
@@ -159,17 +159,17 @@ impl Endpoint {
         self.inner.lock().unwrap().socket.local_addr()
     }
 
-    /// Close all of this endpoint's connections immediately and cease accepting new connections.
+    /// Close all of this endpoint's associations immediately and cease accepting new associations.
     ///
-    /// See [`Connection::close()`] for details.
+    /// See [`Association::close()`] for details.
     ///
-    /// [`Connection::close()`]: crate::Connection::close
+    /// [`Association::close()`]: crate::Association::close
     pub fn close(&self, error_code: ErrorCauseCode, reason: &[u8]) {
         let reason = Bytes::copy_from_slice(reason);
         let mut endpoint = self.inner.lock().unwrap();
-        endpoint.connections.close = Some((error_code, reason.clone()));
-        for sender in endpoint.connections.senders.values() {
-            // Ignoring errors from dropped connections
+        endpoint.associations.close = Some((error_code, reason.clone()));
+        for sender in endpoint.associations.senders.values() {
+            // Ignoring errors from dropped associations
             let _ = sender.unbounded_send(AssociationEvent::Close {
                 error_code,
                 reason: reason.clone(),
@@ -180,13 +180,13 @@ impl Endpoint {
         }
     }
 
-    /// Wait for all connections on the endpoint to be cleanly shut down
+    /// Wait for all associations on the endpoint to be cleanly shut down
     ///
     /// Waiting for this condition before exiting ensures that a good-faith effort is made to notify
-    /// peers of recent connection closes, whereas exiting immediately could force them to wait out
+    /// peers of recent association closes, whereas exiting immediately could force them to wait out
     /// the idle timeout period.
     ///
-    /// Does not proactively close existing connections or cause incoming connections to be
+    /// Does not proactively close existing associations or cause incoming associations to be
     /// rejected. Consider calling [`close()`] and dropping the [`Incoming`] stream if
     /// that is desired.
     ///
@@ -196,7 +196,7 @@ impl Endpoint {
         let mut state = broadcast::State::default();
         futures_util::future::poll_fn(|cx| {
             let endpoint = &mut *self.inner.lock().unwrap();
-            if endpoint.connections.is_empty() {
+            if endpoint.associations.is_empty() {
                 return Poll::Ready(());
             }
             endpoint.idle.register(cx, &mut state);
@@ -209,10 +209,10 @@ impl Endpoint {
 /// A future that drives IO on an endpoint
 ///
 /// This task functions as the switch point between the UDP socket object and the
-/// `Endpoint` responsible for routing datagrams to their owning `Connection`.
+/// `Endpoint` responsible for routing datagrams to their owning `Association`.
 /// In order to do so, it also facilitates the exchange of different types of events
-/// flowing between the `Endpoint` and the tasks managing `Connection`s. As such,
-/// running this task is necessary to keep the endpoint's connections running.
+/// flowing between the `Endpoint` and the tasks managing `Association`s. As such,
+/// running this task is necessary to keep the endpoint's associations running.
 ///
 /// `EndpointDriver` futures terminate when the `Incoming` stream and all clones of the `Endpoint`
 /// have been dropped, or when an I/O error occurs.
@@ -242,7 +242,7 @@ impl Future for EndpointDriver {
             }
         }
 
-        if endpoint.ref_count == 0 && endpoint.connections.is_empty() {
+        if endpoint.ref_count == 0 && endpoint.associations.is_empty() {
             Poll::Ready(Ok(()))
         } else {
             drop(endpoint);
@@ -265,8 +265,8 @@ impl Drop for EndpointDriver {
             task.wake();
         }
         // Drop all outgoing channels, signaling the termination of the endpoint to the associated
-        // connections.
-        endpoint.connections.senders.clear();
+        // associations.
+        endpoint.associations.senders.clear();
     }
 }
 
@@ -280,7 +280,7 @@ pub(crate) struct EndpointInner {
     incoming_reader: Option<Waker>,
     driver: Option<Waker>,
     ipv6: bool,
-    connections: ConnectionSet,
+    associations: AssociationSet,
     events: mpsc::UnboundedReceiver<(AssociationHandle, EndpointEvent)>,
     /// Number of live handles that can be used to initiate or handle I/O; excludes the driver
     ref_count: usize,
@@ -320,13 +320,13 @@ impl EndpointInner {
                             data.freeze(),
                         ) {
                             Some((handle, DatagramEvent::NewAssociation(conn))) => {
-                                let conn = self.connections.insert(handle, conn);
+                                let conn = self.associations.insert(handle, conn);
                                 self.incoming.push_back(conn);
                             }
                             Some((handle, DatagramEvent::AssociationEvent(event))) => {
-                                // Ignoring errors from dropped connections that haven't yet been cleaned up
+                                // Ignoring errors from dropped associations that haven't yet been cleaned up
                                 let _ = self
-                                    .connections
+                                    .associations
                                     .senders
                                     .get_mut(&handle)
                                     .unwrap()
@@ -405,15 +405,15 @@ impl EndpointInner {
                 Poll::Ready(Some((ch, event))) => match event {
                     Proto(e) => {
                         if e.is_drained() {
-                            self.connections.senders.remove(&ch);
-                            if self.connections.is_empty() {
+                            self.associations.senders.remove(&ch);
+                            if self.associations.is_empty() {
                                 self.idle.wake();
                             }
                         }
                         if let Some(event) = self.inner.handle_event(ch, e) {
-                            // Ignoring errors from dropped connections that haven't yet been cleaned up
+                            // Ignoring errors from dropped associations that haven't yet been cleaned up
                             let _ = self
-                                .connections
+                                .associations
                                 .senders
                                 .get_mut(&ch)
                                 .unwrap()
@@ -434,16 +434,16 @@ impl EndpointInner {
 }
 
 #[derive(Debug)]
-struct ConnectionSet {
-    /// Senders for communicating with the endpoint's connections
+struct AssociationSet {
+    /// Senders for communicating with the endpoint's associations
     senders: FxHashMap<AssociationHandle, mpsc::UnboundedSender<AssociationEvent>>,
-    /// Stored to give out clones to new ConnectionInners
+    /// Stored to give out clones to new AssociationInners
     sender: mpsc::UnboundedSender<(AssociationHandle, EndpointEvent)>,
     /// Set if the endpoint has been manually closed
     close: Option<(ErrorCauseCode, Bytes)>,
 }
 
-impl ConnectionSet {
+impl AssociationSet {
     fn insert(
         &mut self,
         handle: AssociationHandle,
@@ -474,7 +474,7 @@ fn ensure_ipv6(x: SocketAddr) -> SocketAddrV6 {
     }
 }
 
-/// Stream of incoming connections.
+/// Stream of incoming associations.
 #[derive(Debug)]
 pub struct Incoming(EndpointRef);
 
@@ -494,7 +494,7 @@ impl futures_util::stream::Stream for Incoming {
             Poll::Ready(None)
         } else if let Some(conn) = endpoint.incoming.pop_front() {
             Poll::Ready(Some(conn))
-        } else if endpoint.connections.close.is_some() {
+        } else if endpoint.associations.close.is_some() {
             Poll::Ready(None)
         } else {
             endpoint.incoming_reader = Some(cx.waker().clone());
@@ -506,7 +506,7 @@ impl futures_util::stream::Stream for Incoming {
 impl Drop for Incoming {
     fn drop(&mut self) {
         let endpoint = &mut *self.0.lock().unwrap();
-        endpoint.inner.reject_new_connections();
+        endpoint.inner.reject_new_associations();
         endpoint.incoming_reader = None;
     }
 }
@@ -529,7 +529,7 @@ impl EndpointRef {
             incoming: VecDeque::new(),
             incoming_reader: None,
             driver: None,
-            connections: ConnectionSet {
+            associations: AssociationSet {
                 senders: FxHashMap::default(),
                 sender,
                 close: None,
@@ -558,7 +558,7 @@ impl Drop for EndpointRef {
             endpoint.ref_count = x;
             if x == 0 {
                 // If the driver is about to be on its own, ensure it can shut down if the last
-                // connection is gone.
+                // association is gone.
                 if let Some(task) = endpoint.driver.take() {
                     task.wake();
                 }

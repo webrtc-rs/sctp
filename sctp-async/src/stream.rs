@@ -92,7 +92,7 @@ impl Stream {
         let mut conn = self.conn.lock("Stream::poll_write");
 
         if let Some(ref x) = conn.error {
-            return Poll::Ready(Err(WriteError::ConnectionLost(x.clone())));
+            return Poll::Ready(Err(WriteError::AssociationLost(x.clone())));
         }
 
         let result = match write_fn(&mut conn.inner.stream(self.stream)?) {
@@ -135,13 +135,13 @@ impl Stream {
             Poll::Ready(None) => Poll::Ready(Ok(())),
             Poll::Ready(Some(e)) => Poll::Ready(Err(e)),
             Poll::Pending => {
-                // To ensure that finished streams can be detected even after the connection is
-                // closed, we must only check for connection errors after determining that the
-                // stream has not yet been finished. Note that this relies on holding the connection
+                // To ensure that finished streams can be detected even after the association is
+                // closed, we must only check for association errors after determining that the
+                // stream has not yet been finished. Note that this relies on holding the association
                 // lock so that it is impossible for the stream to become finished between the above
                 // poll call and this check.
                 if let Some(ref x) = conn.error {
-                    return Poll::Ready(Err(WriteError::ConnectionLost(x.clone())));
+                    return Poll::Ready(Err(WriteError::AssociationLost(x.clone())));
                 }
                 Poll::Pending
             }
@@ -387,9 +387,9 @@ pub enum WriteError {
     /// Carries an application-defined error code.
     #[error("sending stopped by peer: error {0}")]
     Stopped(ErrorCauseCode),
-    /// The connection was lost
-    #[error("connection lost")]
-    ConnectionLost(#[from] AssociationError),
+    /// The association was lost
+    #[error("association lost")]
+    AssociationLost(#[from] AssociationError),
     /// The stream has already been finished or reset
     #[error("unknown stream")]
     UnknownStream,
@@ -400,7 +400,7 @@ impl From<WriteError> for io::Error {
         use self::WriteError::*;
         let kind = match x {
             Stopped(_) => io::ErrorKind::ConnectionReset,
-            Error(_) | ConnectionLost(_) | UnknownStream => io::ErrorKind::NotConnected,
+            Error(_) | AssociationLost(_) | UnknownStream => io::ErrorKind::NotConnected,
         };
         io::Error::new(kind, x)
     }
@@ -412,9 +412,9 @@ pub enum StoppedError {
     /// The proto error
     #[error("proto error {0}")]
     Error(#[from] proto::Error),
-    /// The connection was lost
-    #[error("connection lost")]
-    ConnectionLost(#[from] AssociationError),
+    /// The association was lost
+    #[error("association lost")]
+    AssociationLost(#[from] AssociationError),
     /// The stream has already been finished or reset
     #[error("unknown stream")]
     UnknownStream,
@@ -605,7 +605,7 @@ impl Stream {
             Some(read) => Poll::Ready(Ok(Some(read))),
             None => {
                 if let Some(ref x) = conn.error {
-                    return Poll::Ready(Err(ReadError::ConnectionLost(x.clone())));
+                    return Poll::Ready(Err(ReadError::AssociationLost(x.clone())));
                 }
                 conn.blocked_readers.insert(self.stream, cx.waker().clone());
                 Poll::Pending
@@ -700,9 +700,9 @@ pub enum ReadError {
     /// Carries an application-defined error code.
     #[error("stream reset by peer: error {0}")]
     Reset(ErrorCauseCode),
-    /// The connection was lost
-    #[error("connection lost")]
-    ConnectionLost(#[from] AssociationError),
+    /// The association was lost
+    #[error("association lost")]
+    AssociationLost(#[from] AssociationError),
     /// The stream has already been stopped, finished, or reset
     #[error("unknown stream")]
     UnknownStream,
@@ -719,7 +719,7 @@ impl From<ReadError> for io::Error {
         use self::ReadError::*;
         let kind = match x {
             Reset { .. } => io::ErrorKind::ConnectionReset,
-            Error(_) | ConnectionLost(_) | UnknownStream => io::ErrorKind::NotConnected,
+            Error(_) | AssociationLost(_) | UnknownStream => io::ErrorKind::NotConnected,
             IllegalOrderedRead => io::ErrorKind::InvalidInput,
         };
         io::Error::new(kind, x)

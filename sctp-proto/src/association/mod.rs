@@ -62,7 +62,7 @@ pub enum AssociationError {
     TransportError,
     /// The peer's QUIC stack aborted the association automatically
     #[error("aborted by peer")]
-    ConnectionClosed,
+    AssociationClosed,
     /// The peer closed the association
     #[error("closed by peer")]
     ApplicationClosed,
@@ -88,7 +88,7 @@ pub enum Event {
     /// The association was lost
     ///
     /// Emitted if the peer closes the association or an error is encountered.
-    ConnectionLost {
+    AssociationLost {
         /// Reason that the association was closed
         reason: AssociationError,
     },
@@ -380,7 +380,7 @@ impl Association {
         }*/
 
         if let Some(err) = self.error.take() {
-            return Some(Event::ConnectionLost { reason: err });
+            return Some(Event::AssociationLost { reason: err });
         }
 
         None
@@ -501,7 +501,7 @@ impl Association {
     /// Whether the Association is in the process of being established
     ///
     /// If this returns `false`, the Association may be either established or closed, signaled by the
-    /// emission of a `Connected` or `ConnectionLost` message respectively.
+    /// emission of a `Connected` or `AssociationLost` message respectively.
     pub fn is_handshaking(&self) -> bool {
         !self.handshake_completed
     }
@@ -512,7 +512,7 @@ impl Association {
     /// either peer application intentionally closes it, or when either transport layer detects an
     /// error such as a time-out or certificate validation failure.
     ///
-    /// A `ConnectionLost` event is emitted with details when the association becomes closed.
+    /// A `AssociationLost` event is emitted with details when the association becomes closed.
     pub fn is_closed(&self) -> bool {
         self.state == AssociationState::Closed
     }
