@@ -1,6 +1,3 @@
-#[cfg(test)]
-mod stream_test;
-
 use crate::association::state::AssociationState;
 use crate::association::Association;
 use crate::chunk::chunk_payload_data::{ChunkPayloadData, PayloadProtocolIdentifier};
@@ -188,7 +185,11 @@ impl<'a> Stream<'a> {
     }
 
     pub fn is_closed(&self) -> bool {
-        self.closed
+        if let Some(s) = self.association.streams.get(&self.stream_identifier) {
+            s.closed
+        } else {
+            true
+        }
     }
 
     /// Close closes the write-direction of the stream.
@@ -212,31 +213,82 @@ impl<'a> Stream<'a> {
         Ok(())
     }
 
-    fn get_default_payload_type(&self) -> Result<PayloadProtocolIdentifier> {
+    /// stream_identifier returns the Stream identifier associated to the stream.
+    pub fn stream_identifier(&self) -> StreamId {
+        self.stream_identifier
+    }
+
+    /// set_default_payload_type sets the default payload type used by write.
+    pub fn set_default_payload_type(
+        &mut self,
+        default_payload_type: PayloadProtocolIdentifier,
+    ) -> Result<()> {
+        if let Some(s) = self.association.streams.get_mut(&self.stream_identifier) {
+            s.default_payload_type = default_payload_type;
+            Ok(())
+        } else {
+            Err(Error::ErrStreamClosed)
+        }
+    }
+
+    /// get_default_payload_type returns the payload type associated to the stream.
+    pub fn get_default_payload_type(&self) -> Result<PayloadProtocolIdentifier> {
         if let Some(s) = self.association.streams.get(&self.stream_identifier) {
             Ok(s.default_payload_type)
         } else {
             Err(Error::ErrStreamClosed)
         }
     }
-}
 
-impl<'a> std::ops::Deref for Stream<'a> {
-    type Target = StreamState;
-    fn deref(&self) -> &StreamState {
-        self.association
-            .streams
-            .get(&self.stream_identifier)
-            .unwrap()
+    /// set_reliability_params sets reliability parameters for this stream.
+    pub fn set_reliability_params(
+        &mut self,
+        unordered: bool,
+        rel_type: ReliabilityType,
+        rel_val: u32,
+    ) -> Result<()> {
+        if let Some(s) = self.association.streams.get_mut(&self.stream_identifier) {
+            debug!(
+                "[{}] reliability params: ordered={} type={} value={}",
+                s.side, !unordered, rel_type, rel_val
+            );
+            s.unordered = unordered;
+            s.reliability_type = rel_type;
+            s.reliability_value = rel_val;
+            Ok(())
+        } else {
+            Err(Error::ErrStreamClosed)
+        }
     }
-}
 
-impl<'a> std::ops::DerefMut for Stream<'a> {
-    fn deref_mut(&mut self) -> &mut StreamState {
-        self.association
-            .streams
-            .get_mut(&self.stream_identifier)
-            .unwrap()
+    /// buffered_amount returns the number of bytes of data currently queued to be sent over this stream.
+    pub fn buffered_amount(&self) -> Result<usize> {
+        if let Some(s) = self.association.streams.get(&self.stream_identifier) {
+            Ok(s.buffered_amount)
+        } else {
+            Err(Error::ErrStreamClosed)
+        }
+    }
+
+    /// buffered_amount_low_threshold returns the number of bytes of buffered outgoing data that is
+    /// considered "low." Defaults to 0.
+    pub fn buffered_amount_low_threshold(&self) -> Result<usize> {
+        if let Some(s) = self.association.streams.get(&self.stream_identifier) {
+            Ok(s.buffered_amount_low)
+        } else {
+            Err(Error::ErrStreamClosed)
+        }
+    }
+
+    /// set_buffered_amount_low_threshold is used to update the threshold.
+    /// See buffered_amount_low_threshold().
+    pub fn set_buffered_amount_low_threshold(&mut self, th: usize) -> Result<()> {
+        if let Some(s) = self.association.streams.get_mut(&self.stream_identifier) {
+            s.buffered_amount_low = th;
+            Ok(())
+        } else {
+            Err(Error::ErrStreamClosed)
+        }
     }
 }
 
@@ -277,32 +329,6 @@ impl StreamState {
             buffered_amount: 0,
             buffered_amount_low: 0,
         }
-    }
-
-    /// stream_identifier returns the Stream identifier associated to the stream.
-    pub fn stream_identifier(&self) -> StreamId {
-        self.stream_identifier
-    }
-
-    /// set_default_payload_type sets the default payload type used by write.
-    pub fn set_default_payload_type(&mut self, default_payload_type: PayloadProtocolIdentifier) {
-        self.default_payload_type = default_payload_type;
-    }
-
-    /// set_reliability_params sets reliability parameters for this stream.
-    pub fn set_reliability_params(
-        &mut self,
-        unordered: bool,
-        rel_type: ReliabilityType,
-        rel_val: u32,
-    ) {
-        debug!(
-            "[{}] reliability params: ordered={} type={} value={}",
-            self.side, !unordered, rel_type, rel_val
-        );
-        self.unordered = unordered;
-        self.reliability_type = rel_type;
-        self.reliability_value = rel_val;
     }
 
     pub(crate) fn handle_data(&mut self, pd: &ChunkPayloadData) {
@@ -383,23 +409,6 @@ impl StreamState {
         //trace!("[{}] bufferedAmount = {}", self.side, old_value + raw.len());
 
         chunks
-    }
-
-    /// buffered_amount returns the number of bytes of data currently queued to be sent over this stream.
-    pub fn buffered_amount(&self) -> usize {
-        self.buffered_amount
-    }
-
-    /// buffered_amount_low_threshold returns the number of bytes of buffered outgoing data that is
-    /// considered "low." Defaults to 0.
-    pub fn buffered_amount_low_threshold(&self) -> usize {
-        self.buffered_amount_low
-    }
-
-    /// set_buffered_amount_low_threshold is used to update the threshold.
-    /// See buffered_amount_low_threshold().
-    pub fn set_buffered_amount_low_threshold(&mut self, th: usize) {
-        self.buffered_amount_low = th;
     }
 
     /// This method is called by association's read_loop (go-)routine to notify this stream

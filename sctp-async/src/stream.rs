@@ -8,7 +8,10 @@ use std::{
 use bytes::Bytes;
 use futures_channel::oneshot;
 use futures_util::{io::AsyncRead, io::AsyncWrite, ready, FutureExt};
-use proto::{AssociationError, Chunk, Chunks, ErrorCauseCode, StreamId};
+use proto::{
+    AssociationError, Chunk, Chunks, ErrorCauseCode, PayloadProtocolIdentifier, ReliabilityType,
+    StreamId,
+};
 use thiserror::Error;
 use tokio::io::ReadBuf;
 
@@ -37,6 +40,69 @@ impl Stream {
 
             all_data_read: false,
         }
+    }
+
+    /// stream_identifier returns the Stream identifier associated to the stream.
+    pub fn stream_identifier(&self) -> StreamId {
+        self.stream
+    }
+
+    /// set_default_payload_type sets the default payload type used by write.
+    pub fn set_default_payload_type(
+        &mut self,
+        default_payload_type: PayloadProtocolIdentifier,
+    ) -> Result<(), UnknownStream> {
+        let mut conn = self.conn.lock("Stream::set_default_payload_type");
+        Ok(conn
+            .inner
+            .stream(self.stream)?
+            .set_default_payload_type(default_payload_type)?)
+    }
+
+    /// get_default_payload_type returns the payload type associated to the stream.
+    pub fn get_default_payload_type(&self) -> Result<PayloadProtocolIdentifier, UnknownStream> {
+        let mut conn = self.conn.lock("Stream::get_default_payload_type");
+        Ok(conn.inner.stream(self.stream)?.get_default_payload_type()?)
+    }
+
+    /// set_reliability_params sets reliability parameters for this stream.
+    pub fn set_reliability_params(
+        &mut self,
+        unordered: bool,
+        rel_type: ReliabilityType,
+        rel_val: u32,
+    ) -> Result<(), UnknownStream> {
+        let mut conn = self.conn.lock("Stream::set_reliability_params");
+        Ok(conn
+            .inner
+            .stream(self.stream)?
+            .set_reliability_params(unordered, rel_type, rel_val)?)
+    }
+
+    /// buffered_amount returns the number of bytes of data currently queued to be sent over this stream.
+    pub fn buffered_amount(&self) -> Result<usize, UnknownStream> {
+        let mut conn = self.conn.lock("Stream::buffered_amount");
+        Ok(conn.inner.stream(self.stream)?.buffered_amount()?)
+    }
+
+    /// buffered_amount_low_threshold returns the number of bytes of buffered outgoing data that is
+    /// considered "low." Defaults to 0.
+    pub fn buffered_amount_low_threshold(&self) -> Result<usize, UnknownStream> {
+        let mut conn = self.conn.lock("Stream::buffered_amount_low_threshold");
+        Ok(conn
+            .inner
+            .stream(self.stream)?
+            .buffered_amount_low_threshold()?)
+    }
+
+    /// set_buffered_amount_low_threshold is used to update the threshold.
+    /// See buffered_amount_low_threshold().
+    pub fn set_buffered_amount_low_threshold(&mut self, th: usize) -> Result<(), UnknownStream> {
+        let mut conn = self.conn.lock("Stream::set_buffered_amount_low_threshold");
+        Ok(conn
+            .inner
+            .stream(self.stream)?
+            .set_buffered_amount_low_threshold(th)?)
     }
 }
 

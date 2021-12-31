@@ -3,6 +3,7 @@ use crate::association::Event;
 use crate::error::{Error, Result};
 
 use crate::association::state::{AckMode, AssociationState};
+use crate::association::stream::{ReliabilityType, Stream};
 use crate::chunk::chunk_abort::ChunkAbort;
 use crate::chunk::chunk_cookie_echo::ChunkCookieEcho;
 use crate::chunk::chunk_error::ChunkError;
@@ -19,7 +20,6 @@ use crate::chunk::{ErrorCauseProtocolViolation, PROTOCOL_VIOLATION};
 use crate::packet::{CommonHeader, Packet};
 use crate::param::param_outgoing_reset_request::ParamOutgoingResetRequest;
 use crate::param::param_reconfig_response::ParamReconfigResponse;
-use crate::stream::{ReliabilityType, Stream};
 use assert_matches::assert_matches;
 use lazy_static::lazy_static;
 use std::io::Write;
@@ -643,10 +643,16 @@ fn test_assoc_reliable_ordered_fragmented_then_defragmented() -> Result<()> {
 
     establish_session_pair(&mut pair, client_ch, server_ch, si)?;
 
-    pair.client_stream(client_ch, si)?
-        .set_reliability_params(false, ReliabilityType::Reliable, 0);
-    pair.server_stream(server_ch, si)?
-        .set_reliability_params(false, ReliabilityType::Reliable, 0);
+    pair.client_stream(client_ch, si)?.set_reliability_params(
+        false,
+        ReliabilityType::Reliable,
+        0,
+    )?;
+    pair.server_stream(server_ch, si)?.set_reliability_params(
+        false,
+        ReliabilityType::Reliable,
+        0,
+    )?;
 
     let n = pair.client_stream(client_ch, si)?.write_sctp(
         &Bytes::from(sbufl.clone()),
@@ -699,10 +705,16 @@ fn test_assoc_reliable_unordered_fragmented_then_defragmented() -> Result<()> {
 
     establish_session_pair(&mut pair, client_ch, server_ch, si)?;
 
-    pair.client_stream(client_ch, si)?
-        .set_reliability_params(true, ReliabilityType::Reliable, 0);
-    pair.server_stream(server_ch, si)?
-        .set_reliability_params(true, ReliabilityType::Reliable, 0);
+    pair.client_stream(client_ch, si)?.set_reliability_params(
+        true,
+        ReliabilityType::Reliable,
+        0,
+    )?;
+    pair.server_stream(server_ch, si)?.set_reliability_params(
+        true,
+        ReliabilityType::Reliable,
+        0,
+    )?;
 
     let n = pair.client_stream(client_ch, si)?.write_sctp(
         &Bytes::from(sbufl.clone()),
@@ -751,10 +763,16 @@ fn test_assoc_reliable_unordered_ordered() -> Result<()> {
 
     establish_session_pair(&mut pair, client_ch, server_ch, si)?;
 
-    pair.client_stream(client_ch, si)?
-        .set_reliability_params(true, ReliabilityType::Reliable, 0);
-    pair.server_stream(server_ch, si)?
-        .set_reliability_params(true, ReliabilityType::Reliable, 0);
+    pair.client_stream(client_ch, si)?.set_reliability_params(
+        true,
+        ReliabilityType::Reliable,
+        0,
+    )?;
+    pair.server_stream(server_ch, si)?.set_reliability_params(
+        true,
+        ReliabilityType::Reliable,
+        0,
+    )?;
 
     sbuf[0..4].copy_from_slice(&0u32.to_be_bytes());
     let n = pair.client_stream(client_ch, si)?.write_sctp(
@@ -958,9 +976,9 @@ fn test_assoc_unreliable_rexmit_ordered_no_fragment() -> Result<()> {
     // When we set the reliability value to 0 [times], then it will cause
     // the chunk to be abandoned immediately after the first transmission.
     pair.client_stream(client_ch, si)?
-        .set_reliability_params(false, ReliabilityType::Rexmit, 0);
+        .set_reliability_params(false, ReliabilityType::Rexmit, 0)?;
     pair.server_stream(server_ch, si)?
-        .set_reliability_params(false, ReliabilityType::Rexmit, 0); // doesn't matter
+        .set_reliability_params(false, ReliabilityType::Rexmit, 0)?; // doesn't matter
 
     //br.drop_next_nwrites(0, 1).await; // drop the first packet (second one should be sacked)
 
@@ -1038,9 +1056,9 @@ fn test_assoc_unreliable_rexmit_ordered_fragment() -> Result<()> {
     // When we set the reliability value to 0 [times], then it will cause
     // the chunk to be abandoned immediately after the first transmission.
     pair.client_stream(client_ch, si)?
-        .set_reliability_params(false, ReliabilityType::Rexmit, 0);
+        .set_reliability_params(false, ReliabilityType::Rexmit, 0)?;
     pair.server_stream(server_ch, si)?
-        .set_reliability_params(false, ReliabilityType::Rexmit, 0); // doesn't matter
+        .set_reliability_params(false, ReliabilityType::Rexmit, 0)?; // doesn't matter
 
     //br.drop_next_nwrites(0, 1).await; // drop the first packet (second one should be sacked)
 
@@ -1112,9 +1130,9 @@ fn test_assoc_unreliable_rexmit_unordered_no_fragment() -> Result<()> {
     // When we set the reliability value to 0 [times], then it will cause
     // the chunk to be abandoned immediately after the first transmission.
     pair.client_stream(client_ch, si)?
-        .set_reliability_params(true, ReliabilityType::Rexmit, 0);
+        .set_reliability_params(true, ReliabilityType::Rexmit, 0)?;
     pair.server_stream(server_ch, si)?
-        .set_reliability_params(true, ReliabilityType::Rexmit, 0); // doesn't matter
+        .set_reliability_params(true, ReliabilityType::Rexmit, 0)?; // doesn't matter
 
     //br.drop_next_nwrites(0, 1).await; // drop the first packet (second one should be sacked)
 
@@ -1186,9 +1204,9 @@ fn test_assoc_unreliable_rexmit_unordered_fragment() -> Result<()> {
     // When we set the reliability value to 0 [times], then it will cause
     // the chunk to be abandoned immediately after the first transmission.
     pair.client_stream(client_ch, si)?
-        .set_reliability_params(true, ReliabilityType::Rexmit, 0);
+        .set_reliability_params(true, ReliabilityType::Rexmit, 0)?;
     pair.server_stream(server_ch, si)?
-        .set_reliability_params(true, ReliabilityType::Rexmit, 0); // doesn't matter
+        .set_reliability_params(true, ReliabilityType::Rexmit, 0)?; // doesn't matter
 
     sbuf[0..4].copy_from_slice(&0u32.to_be_bytes());
     let n = pair.client_stream(client_ch, si)?.write_sctp(
@@ -1268,9 +1286,9 @@ fn test_assoc_unreliable_rexmit_timed_ordered() -> Result<()> {
     // When we set the reliability value to 0 [times], then it will cause
     // the chunk to be abandoned immediately after the first transmission.
     pair.client_stream(client_ch, si)?
-        .set_reliability_params(false, ReliabilityType::Timed, 0);
+        .set_reliability_params(false, ReliabilityType::Timed, 0)?;
     pair.server_stream(server_ch, si)?
-        .set_reliability_params(false, ReliabilityType::Timed, 0); // doesn't matter
+        .set_reliability_params(false, ReliabilityType::Timed, 0)?; // doesn't matter
 
     //br.drop_next_nwrites(0, 1).await; // drop the first packet (second one should be sacked)
 
@@ -1342,9 +1360,9 @@ fn test_assoc_unreliable_rexmit_timed_unordered() -> Result<()> {
     // When we set the reliability value to 0 [times], then it will cause
     // the chunk to be abandoned immediately after the first transmission.
     pair.client_stream(client_ch, si)?
-        .set_reliability_params(true, ReliabilityType::Timed, 0);
+        .set_reliability_params(true, ReliabilityType::Timed, 0)?;
     pair.server_stream(server_ch, si)?
-        .set_reliability_params(true, ReliabilityType::Timed, 0); // doesn't matter
+        .set_reliability_params(true, ReliabilityType::Timed, 0)?; // doesn't matter
 
     //br.drop_next_nwrites(0, 1).await; // drop the first packet (second one should be sacked)
 
@@ -1610,7 +1628,10 @@ fn test_assoc_congestion_control_congestion_avoidance() -> Result<()> {
     {
         assert_eq!(
             0,
-            pair.server_stream(server_ch, si)?
+            pair.server_conn_mut(server_ch)
+                .streams
+                .get(&si)
+                .unwrap()
                 .get_num_bytes_in_reassembly_queue(),
             "reassembly queue should be empty"
         );
@@ -1717,7 +1738,10 @@ fn test_assoc_congestion_control_slow_reader() -> Result<()> {
     );
     assert_eq!(
         0,
-        pair.server_stream(server_ch, si)?
+        pair.server_conn_mut(server_ch)
+            .streams
+            .get(&si)
+            .unwrap()
             .get_num_bytes_in_reassembly_queue(),
         "reassembly queue should be empty"
     );
@@ -1788,7 +1812,10 @@ fn test_assoc_delayed_ack() -> Result<()> {
     assert_eq!(n_packets_received, 1, "unexpected num of packets received");
     assert_eq!(
         0,
-        pair.server_stream(server_ch, si)?
+        pair.server_conn_mut(server_ch)
+            .streams
+            .get(&si)
+            .unwrap()
             .get_num_bytes_in_reassembly_queue(),
         "reassembly queue should be empty"
     );

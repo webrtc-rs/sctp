@@ -23,7 +23,7 @@ mod udp;
 mod work_limiter;
 
 pub use proto::{
-    AssociationError, Chunk, ClientConfig, ConnectError, EndpointConfig, ErrorCauseCode,
+    AssociationError, Chunk, ClientConfig, ConnectError, EndpointConfig, Error, ErrorCauseCode,
     ServerConfig, StreamId, Transmit, TransportConfig,
 };
 

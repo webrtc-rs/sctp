@@ -35,8 +35,8 @@ bencher = "0.1.5"
 directories-next = "2"
 futures-util = { version = "0.3.11", default-features = false, features = ["async-await-macro"] }
 rand = "0.8"
-structopt = "0.3.0"
-tokio = { version = "1.15.0", features = ["rt", "rt-multi-thread", "time", "macros", "sync"] }
+clap = "2.34.0"
+tokio = { version = "1.15.0", features = ["rt", "rt-multi-thread", "time", "macros", "sync", "signal"] }
 tracing-subscriber = { version = "0.3.0", default-features = false, features = ["env-filter", "fmt", "ansi", "time", "local-time"] }
 tracing-futures = { version = "0.2.0", default-features = false, features = ["std-future"] }
 tokio-test = "0.4.2"

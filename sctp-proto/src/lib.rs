@@ -25,7 +25,11 @@ use std::{
 };
 
 mod association;
-pub use crate::association::{stats::AssociationStats, Association, AssociationError, Event};
+pub use crate::association::{
+    stats::AssociationStats,
+    stream::{ReliabilityType, Stream, StreamEvent, StreamId, StreamState},
+    Association, AssociationError, Event,
+};
 
 pub(crate) mod chunk;
 pub use crate::chunk::{
@@ -46,9 +50,6 @@ mod packet;
 
 mod shared;
 pub use crate::shared::{AssociationEvent, AssociationId, EcnCodepoint, EndpointEvent};
-
-mod stream;
-pub use crate::stream::{ReliabilityType, Stream, StreamEvent, StreamId, StreamState};
 
 pub(crate) mod param;
 

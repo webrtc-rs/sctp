@@ -28,9 +28,9 @@ use crate::param::{
 };
 use crate::queue::{payload_queue::PayloadQueue, pending_queue::PendingQueue};
 use crate::shared::{AssociationEventInner, AssociationId, EndpointEvent, EndpointEventInner};
-use crate::stream::{ReliabilityType, Stream, StreamEvent, StreamId, StreamState};
 use crate::util::{sna16lt, sna32gt, sna32gte, sna32lt, sna32lte};
 use crate::{AssociationEvent, Payload, Side, Transmit};
+use stream::{ReliabilityType, Stream, StreamEvent, StreamId, StreamState};
 use timer::{RtoManager, Timer, TimerTable, ACK_INTERVAL};
 
 use bytes::Bytes;
@@ -46,6 +46,7 @@ use tracing::{debug, error, trace, warn};
 
 pub(crate) mod state;
 pub(crate) mod stats;
+pub(crate) mod stream;
 mod timer;
 
 #[cfg(test)]

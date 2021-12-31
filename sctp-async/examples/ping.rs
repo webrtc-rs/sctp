@@ -1,36 +1,21 @@
-fn main() {}
-/*use sctp_async as sctp;
+use proto::{ClientConfig, PayloadProtocolIdentifier, ReliabilityType};
+use sctp_async::{Endpoint, NewAssociation};
 
-use sctp::association::*;
-use sctp::chunk::chunk_payload_data::PayloadProtocolIdentifier;
-use sctp::stream::*;
-use sctp::Error;
-
+use anyhow::{anyhow, Result};
 use bytes::Bytes;
 use clap::{App, AppSettings, Arg};
-use std::sync::Arc;
-use tokio::net::UdpSocket;
-use tokio::signal;
-use tokio::sync::mpsc;
+use std::time::Instant;
 
 // RUST_LOG=trace cargo run --color=always --package webrtc-sctp --example ping -- --server 0.0.0.0:5678
 
 #[tokio::main]
-async fn main() -> Result<(), Error> {
-    /*env_logger::Builder::new()
-    .format(|buf, record| {
-        writeln!(
-            buf,
-            "{}:{} [{}] {} - {}",
-            record.file().unwrap_or("unknown"),
-            record.line().unwrap_or(0),
-            record.level(),
-            chrono::Local::now().format("%H:%M:%S.%6f"),
-            record.args()
-        )
-    })
-    .filter(None, log::LevelFilter::Trace)
-    .init();*/
+async fn main() -> Result<()> {
+    tracing::subscriber::set_global_default(
+        tracing_subscriber::FmtSubscriber::builder()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .finish(),
+    )
+    .unwrap();
 
     let mut app = App::new("SCTP Ping")
         .version("0.1.0")
@@ -60,25 +45,45 @@ async fn main() -> Result<(), Error> {
 
     let server = matches.value_of("server").unwrap();
 
-    let conn = Arc::new(UdpSocket::bind("0.0.0.0:0").await.unwrap());
-    conn.connect(server).await.unwrap();
+    let start = Instant::now();
+    let mut endpoint = Endpoint::client("0.0.0.0:0".parse().unwrap())?;
+    endpoint.set_default_client_config(ClientConfig::new());
+
     println!("connecting {}..", server);
+    let new_conn = endpoint
+        .connect(server.parse().unwrap())?
+        .await
+        .map_err(|e| anyhow!("failed to connect: {}", e))?;
 
-    let config = Config {
-        net_conn: conn,
-        max_receive_buffer_size: 0,
-        max_message_size: 0,
-        name: "client".to_owned(),
-    };
-    let a = Association::client(config).await?;
-    println!("created a client");
+    println!("connected at {:?}", start.elapsed());
 
-    let stream = a.open_stream(0, PayloadProtocolIdentifier::String).await?;
+    let NewAssociation {
+        association: conn, ..
+    } = new_conn;
+
+    let mut stream = conn
+        .open_stream(0, PayloadProtocolIdentifier::String)
+        .await
+        .map_err(|e| anyhow!("failed to open stream: {}", e))?;
+
     println!("opened a stream");
 
     // set unordered = true and 10ms treshold for dropping packets
-    stream.set_reliability_params(true, ReliabilityType::Timed, 10);
+    stream.set_reliability_params(true, ReliabilityType::Timed, 10)?;
 
+    let ping_msg = format!("ping {}", 0);
+    println!("sent: {}", ping_msg);
+    stream.write(&Bytes::from(ping_msg)).await?;
+
+    let mut buff = vec![0u8; 1024];
+    while let Ok(Some(n)) = stream.read(&mut buff).await {
+        let pong_msg = String::from_utf8(buff[..n].to_vec()).unwrap();
+        println!("received: {}", pong_msg);
+    }
+
+    println!("finished recv pong");
+
+    /*
     let stream_tx = Arc::clone(&stream);
     tokio::spawn(async move {
         let mut ping_seq_num = 0;
@@ -106,16 +111,12 @@ async fn main() -> Result<(), Error> {
         println!("finished recv pong");
         drop(done_tx);
     });
+    */
 
-    println!("Waiting for Ctrl-C...");
-    signal::ctrl_c().await.expect("failed to listen for event");
-    println!("Closing stream and association...");
+    conn.close(0u16.into(), b"done");
 
-    stream.close().await?;
-    a.close().await?;
-
-    let _ = done_rx.recv().await;
+    // Give the server a fair chance to receive the close packet
+    endpoint.wait_idle().await;
 
     Ok(())
 }
-*/
