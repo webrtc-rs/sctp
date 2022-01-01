@@ -85,8 +85,9 @@ async fn main() -> Result<()> {
     println!("sent: {}", ping_msg);
     stream.write(&Bytes::from(ping_msg)).await?;
 
+    println!("waiting pong...");
     let mut buff = vec![0u8; 1024];
-    while let Ok(Some(n)) = stream.read(&mut buff).await {
+    if let Ok(Some(n)) = stream.read(&mut buff).await {
         let pong_msg = String::from_utf8(buff[..n].to_vec()).unwrap();
         println!("received: {}", pong_msg);
     }

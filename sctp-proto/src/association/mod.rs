@@ -1183,11 +1183,12 @@ impl Association {
             if let Some(s) = self.streams.get_mut(&d.stream_identifier) {
                 self.events.push_back(Event::DatagramReceived);
                 s.handle_data(d);
-            } else {
-                debug!("[{}] stream_handle_data {}", self.side, stream_handle_data);
+                if s.reassembly_queue.is_readable() {
+                    self.events.push_back(Event::Stream(StreamEvent::Readable {
+                        id: d.stream_identifier,
+                    }))
+                }
             }
-        } else {
-            debug!("[{}] stream_handle_data {}", self.side, stream_handle_data);
         }
 
         self.handle_peer_last_tsn_and_acknowledgement(immediate_sack)
