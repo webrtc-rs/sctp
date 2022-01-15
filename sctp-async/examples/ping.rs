@@ -122,8 +122,12 @@ async fn main() -> Result<()> {
         println!("finished recv pong");
         drop(done_tx);
     });
-    */
-    //stream.close(0.into())?;
+     */
+
+    send_stream
+        .finish()
+        .await
+        .map_err(|e| anyhow!("failed to shutdown stream: {}", e))?;
 
     conn.close(0u16.into(), b"done");
 

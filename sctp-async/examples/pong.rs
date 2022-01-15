@@ -1,7 +1,7 @@
 use proto::{AssociationError, ReliabilityType, ServerConfig};
 use sctp_async::{Connecting, Endpoint, NewAssociation, RecvStream, SendStream};
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use bytes::Bytes;
 use clap::{App, AppSettings, Arg};
 use futures_util::{StreamExt, TryFutureExt};
@@ -120,13 +120,11 @@ async fn handle_stream((mut send_stream, mut recv_stream): (SendStream, RecvStre
     }
     println!("finished ping-pong");
 
-    //stream.close(0.into())?;
-
     // Gracefully terminate the stream
-    /*stream
-    .finish()
-    .await
-    .map_err(|e| anyhow!("failed to shutdown stream: {}", e))?;*/
+    send_stream
+        .finish()
+        .await
+        .map_err(|e| anyhow!("failed to shutdown stream: {}", e))?;
 
     info!("complete");
     Ok(())
