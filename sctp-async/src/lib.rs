@@ -18,7 +18,8 @@ mod association;
 mod broadcast;
 mod endpoint;
 mod mutex;
-mod stream;
+mod recv_stream;
+mod send_stream;
 mod udp;
 mod work_limiter;
 
@@ -29,10 +30,11 @@ pub use proto::{
 
 pub use crate::association::{Association, Connecting, IncomingStreams, NewAssociation, Opening};
 pub use crate::endpoint::{Endpoint, Incoming};
-pub use crate::stream::{
+pub use crate::recv_stream::{
     Read, ReadChunk, ReadChunks, ReadError, ReadExact, ReadExactError, ReadToEnd, ReadToEndError,
-    StoppedError, Stream, WriteError,
+    RecvStream,
 };
+pub use crate::send_stream::{SendStream, StoppedError, WriteError};
 
 #[derive(Debug)]
 enum AssociationEvent {

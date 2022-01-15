@@ -1,7 +1,7 @@
 use proto::{AssociationError, ReliabilityType, ServerConfig};
-use sctp_async::{Connecting, Endpoint, NewAssociation, Stream};
+use sctp_async::{Connecting, Endpoint, NewAssociation, RecvStream, SendStream};
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use bytes::Bytes;
 use clap::{App, AppSettings, Arg};
 use futures_util::{StreamExt, TryFutureExt};
@@ -92,8 +92,6 @@ async fn handle_association(conn: Connecting) -> Result<()> {
             Ok(s) => s,
         };
 
-        info!("incoming stream {}", stream.stream_identifier());
-
         tokio::spawn(
             handle_stream(stream)
                 .unwrap_or_else(move |e| error!("failed: {reason}", reason = e.to_string())),
@@ -103,28 +101,33 @@ async fn handle_association(conn: Connecting) -> Result<()> {
     Ok(())
 }
 
-async fn handle_stream(mut stream: Stream) -> Result<()> {
+async fn handle_stream((mut send_stream, mut recv_stream): (SendStream, RecvStream)) -> Result<()> {
+    info!("incoming stream {}", recv_stream.stream_identifier());
+
     // set unordered = true and 10ms threshold for dropping packets
-    stream.set_reliability_params(true, ReliabilityType::Timed, 10)?;
+    send_stream.set_reliability_params(true, ReliabilityType::Timed, 10)?;
 
     let mut buff = vec![0u8; 1024];
-    while let Ok(Some(n)) = stream.read(&mut buff).await {
+    while let Ok(Some(n)) = recv_stream.read(&mut buff).await {
         let ping_msg = String::from_utf8(buff[..n].to_vec()).unwrap();
         println!("received: {}", ping_msg);
 
         let pong_msg = format!("pong [{}]", ping_msg);
         println!("sent: {}", pong_msg);
-        stream.write(&Bytes::from(pong_msg)).await?;
+        send_stream.write(&Bytes::from(pong_msg)).await?;
 
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
     println!("finished ping-pong");
 
+    //stream.close(0.into())?;
+
     // Gracefully terminate the stream
-    stream
-        .finish()
-        .await
-        .map_err(|e| anyhow!("failed to shutdown stream: {}", e))?;
+    /*stream
+    .finish()
+    .await
+    .map_err(|e| anyhow!("failed to shutdown stream: {}", e))?;*/
+
     info!("complete");
     Ok(())
 }

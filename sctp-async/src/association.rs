@@ -23,8 +23,8 @@ use tokio::time::{sleep_until, Instant as TokioInstant, Sleep};
 use crate::{
     broadcast::{self, Broadcast},
     mutex::Mutex,
-    stream::{Stream, WriteError},
-    AssociationEvent, EndpointEvent,
+    send_stream::{SendStream, WriteError},
+    AssociationEvent, EndpointEvent, RecvStream,
 };
 
 /// In-progress association attempt future
@@ -315,7 +315,7 @@ impl Clone for Association {
 pub struct IncomingStreams(AssociationRef);
 
 impl futures_util::stream::Stream for IncomingStreams {
-    type Item = Result<Stream, AssociationError>;
+    type Item = Result<(SendStream, RecvStream), AssociationError>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         //debug!("IncomingStreams::poll_next..");
@@ -325,7 +325,10 @@ impl futures_util::stream::Stream for IncomingStreams {
             //debug!("IncomingStreams::poll_next::accept_stream {}", id);
             conn.wake(); // To send additional stream ID credit
             mem::drop(conn); // Release the lock so clone can take it
-            Poll::Ready(Some(Ok(Stream::new(self.0.clone(), id))))
+            Poll::Ready(Some(Ok((
+                SendStream::new(self.0.clone(), id),
+                RecvStream::new(self.0.clone(), id),
+            ))))
         } else if let Some(AssociationError::LocallyClosed) = conn.error {
             //debug!("IncomingStreams::poll_next::LocallyClosed");
             Poll::Ready(None)
@@ -350,7 +353,7 @@ pub struct Opening {
 }
 
 impl Future for Opening {
-    type Output = Result<Stream, AssociationError>;
+    type Output = Result<(SendStream, RecvStream), AssociationError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
@@ -364,7 +367,10 @@ impl Future for Opening {
             .is_ok()
         {
             drop(conn); // Release lock for clone
-            return Poll::Ready(Ok(Stream::new(this.conn.clone(), this.stream_identifier)));
+            return Poll::Ready(Ok((
+                SendStream::new(this.conn.clone(), this.stream_identifier),
+                RecvStream::new(this.conn.clone(), this.stream_identifier),
+            )));
         }
         conn.opening.register(cx, &mut this.state);
         Poll::Pending

@@ -71,7 +71,7 @@ async fn main() -> Result<()> {
         association: conn, ..
     } = new_conn;
 
-    let mut stream = conn
+    let (mut send_stream, mut recv_stream) = conn
         .open_stream(0, PayloadProtocolIdentifier::String)
         .await
         .map_err(|e| anyhow!("failed to open stream: {}", e))?;
@@ -79,15 +79,15 @@ async fn main() -> Result<()> {
     println!("opened a stream");
 
     // set unordered = true and 10ms treshold for dropping packets
-    stream.set_reliability_params(true, ReliabilityType::Timed, 10)?;
+    send_stream.set_reliability_params(true, ReliabilityType::Timed, 10)?;
 
     let ping_msg = format!("ping {}", 0);
     println!("sent: {}", ping_msg);
-    stream.write(&Bytes::from(ping_msg)).await?;
+    send_stream.write(&Bytes::from(ping_msg)).await?;
 
     println!("waiting pong...");
     let mut buff = vec![0u8; 1024];
-    if let Ok(Some(n)) = stream.read(&mut buff).await {
+    if let Ok(Some(n)) = recv_stream.read(&mut buff).await {
         let pong_msg = String::from_utf8(buff[..n].to_vec()).unwrap();
         println!("received: {}", pong_msg);
     }
@@ -123,6 +123,7 @@ async fn main() -> Result<()> {
         drop(done_tx);
     });
     */
+    //stream.close(0.into())?;
 
     conn.close(0u16.into(), b"done");
 
