@@ -24,13 +24,13 @@ pub struct RecvStream {
 
 impl Drop for RecvStream {
     fn drop(&mut self) {
-        let mut conn = self.conn.lock("Stream::drop");
+        let mut conn = self.conn.lock("RecvStream::drop");
         if conn.error.is_some() {
             return;
         }
         if !self.all_data_read {
             if let Ok(mut stream) = conn.inner.stream(self.stream) {
-                let _ = stream.close();
+                let _ = stream.stop();
             }
             conn.wake();
         }
@@ -190,8 +190,8 @@ impl RecvStream {
     /// Discards unread data and notifies the peer to stop transmitting. Once stopped, further
     /// attempts to operate on a stream will yield `UnknownStream` errors.
     pub fn stop(&mut self, _error_code: ErrorCauseCode) -> Result<(), UnknownStream> {
-        let mut conn = self.conn.lock("Stream::stop");
-        conn.inner.stream(self.stream)?.close()?; //error_code
+        let mut conn = self.conn.lock("RecvStream::stop");
+        conn.inner.stream(self.stream)?.stop()?; //error_code
         conn.wake();
         self.all_data_read = true;
         Ok(())

@@ -24,6 +24,21 @@ pub struct SendStream {
     finishing: Option<oneshot::Receiver<Option<WriteError>>>,
 }
 
+impl Drop for SendStream {
+    fn drop(&mut self) {
+        let mut conn = self.conn.lock("SendStream::drop");
+        if conn.error.is_some() {
+            return;
+        }
+        if self.finishing.is_none() {
+            if let Ok(mut stream) = conn.inner.stream(self.stream) {
+                let _ = stream.finish();
+            }
+            conn.wake();
+        }
+    }
+}
+
 impl SendStream {
     pub(crate) fn new(conn: AssociationRef, stream: StreamId) -> Self {
         Self {
@@ -168,16 +183,29 @@ impl SendStream {
     ///
     /// No new data may be written after calling this method. Completes when the peer has
     /// acknowledged all sent data, retransmitting data as needed.
+    pub fn finish(&mut self) -> Result<(), UnknownStream> {
+        let mut conn = self.conn.lock("SendStream::stop");
+        conn.inner.stream(self.stream)?.finish()?; //error_code
+        conn.wake();
+        //self.all_data_read = true;
+        Ok(())
+    }
+
+    /*
+    /// Shut down the send stream gracefully.
+    ///
+    /// No new data may be written after calling this method. Completes when the peer has
+    /// acknowledged all sent data, retransmitting data as needed.
     pub fn finish(&mut self) -> Finish<'_> {
         Finish { stream: self }
-    }
+    }*/
 
     #[doc(hidden)]
     pub fn poll_finish(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), WriteError>> {
         let mut conn = self.conn.lock("poll_finish");
 
         if self.finishing.is_none() {
-            conn.inner.stream(self.stream)?.close()?;
+            conn.inner.stream(self.stream)?.finish()?;
             let (send, recv) = oneshot::channel();
             self.finishing = Some(recv);
             conn.finishing.insert(self.stream, send);
@@ -206,18 +234,6 @@ impl SendStream {
         }
     }
 
-    /// Close the send stream immediately.
-    ///
-    /// No new data can be written after calling this method. Locally buffered data is dropped, and
-    /// previously transmitted data will no longer be retransmitted if lost. If an attempt has
-    /// already been made to finish the stream, the peer may still receive all written data.
-    pub fn close(&mut self, _error_code: ErrorCauseCode) -> Result<(), UnknownStream> {
-        let mut conn = self.conn.lock("Stream::reset");
-        conn.inner.stream(self.stream)?.close()?; //
-        conn.wake();
-        Ok(())
-    }
-
     /// Completes if/when the peer stops the stream, yielding the error code
     pub fn stopped(&mut self) -> Stopped<'_> {
         Stopped { stream: self }
@@ -225,9 +241,9 @@ impl SendStream {
 
     #[doc(hidden)]
     pub fn poll_stopped(&mut self, cx: &mut Context<'_>) -> Poll<Result<bool, StoppedError>> {
-        let mut conn = self.conn.lock("Stream::poll_stopped");
+        let mut conn = self.conn.lock("SendStream::poll_stopped");
 
-        if conn.inner.stream(self.stream)?.is_closed() {
+        if !conn.inner.stream(self.stream)?.is_writable() {
             Poll::Ready(Ok(true))
         } else {
             conn.stopped.insert(self.stream, cx.waker().clone());
@@ -272,21 +288,6 @@ impl tokio::io::AsyncWrite for SendStream {
 
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         AsyncWrite::poll_close(self, cx)
-    }
-}
-
-impl Drop for SendStream {
-    fn drop(&mut self) {
-        let mut conn = self.conn.lock("Stream::drop");
-        if conn.error.is_some() {
-            return;
-        }
-        if self.finishing.is_none() {
-            if let Ok(mut stream) = conn.inner.stream(self.stream) {
-                let _ = stream.close();
-            }
-            conn.wake();
-        }
     }
 }
 

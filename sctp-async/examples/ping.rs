@@ -124,15 +124,14 @@ async fn main() -> Result<()> {
     });
      */
 
-    send_stream
-        .finish()
-        .await
-        .map_err(|e| anyhow!("failed to shutdown stream: {}", e))?;
+    send_stream.finish()?;
 
+    println!("close association");
     conn.close(0u16.into(), b"done");
 
+    println!("wait until endpoint idle");
     // Give the server a fair chance to receive the close packet
-    endpoint.wait_idle().await;
+    //endpoint.wait_idle().await;
 
     Ok(())
 }

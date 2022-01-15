@@ -259,7 +259,7 @@ impl ReassemblyQueue {
         let mut found = false;
 
         for (i, c) in self.unordered_chunks.iter().enumerate() {
-            // seek beigining
+            // seek beginning
             if c.beginning_fragment {
                 start_idx = i as isize;
                 n_chunks = 1;

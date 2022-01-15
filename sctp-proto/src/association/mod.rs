@@ -33,6 +33,7 @@ use crate::{AssociationEvent, Payload, Side, Transmit};
 use stream::{ReliabilityType, Stream, StreamEvent, StreamId, StreamState};
 use timer::{RtoManager, Timer, TimerTable, ACK_INTERVAL};
 
+use crate::association::stream::RecvSendState;
 use bytes::Bytes;
 use fxhash::FxHashMap;
 use log::{debug, error, trace, warn};
@@ -703,7 +704,8 @@ impl Association {
     /// The caller should hold the association write lock.
     fn unregister_stream(&mut self, stream_identifier: StreamId) {
         if let Some(mut s) = self.streams.remove(&stream_identifier) {
-            s.closed = true;
+            debug!("[{}] unregister_stream {}", self.side, stream_identifier);
+            s.state = RecvSendState::Closed;
         }
     }
 
@@ -1253,7 +1255,10 @@ impl Association {
 
         for (si, n_bytes_acked) in &bytes_acked_per_stream {
             if let Some(s) = self.streams.get_mut(si) {
-                s.on_buffer_released(*n_bytes_acked);
+                if s.on_buffer_released(*n_bytes_acked) {
+                    self.events
+                        .push_back(Event::Stream(StreamEvent::BufferedAmountLow { id: *si }))
+                }
             }
         }
 

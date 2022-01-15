@@ -109,7 +109,7 @@ impl<'a> Stream<'a> {
     /// otherwise.
     pub fn read_sctp(&mut self) -> Result<Option<Chunks>> {
         if let Some(s) = self.association.streams.get_mut(&self.stream_identifier) {
-            if !s.closed {
+            if s.state == RecvSendState::ReadWritable || s.state == RecvSendState::Readable {
                 return Ok(s.reassembly_queue.read());
             }
         }
@@ -159,6 +159,10 @@ impl<'a> Stream<'a> {
         source: &mut B,
         ppi: PayloadProtocolIdentifier,
     ) -> Result<usize> {
+        if !self.is_writable() {
+            return Err(Error::ErrStreamClosed);
+        }
+
         if source.remaining() > self.association.max_message_size() as usize {
             return Err(Error::ErrOutboundPacketTooLarge);
         }
@@ -184,23 +188,31 @@ impl<'a> Stream<'a> {
         }
     }
 
-    pub fn is_closed(&self) -> bool {
+    pub fn is_readable(&self) -> bool {
         if let Some(s) = self.association.streams.get(&self.stream_identifier) {
-            s.closed
+            s.state == RecvSendState::Readable || s.state == RecvSendState::ReadWritable
         } else {
-            true
+            false
         }
     }
 
-    /// Close closes the write-direction of the stream.
-    /// Future calls to write are not permitted after calling Close.
-    pub fn close(&mut self) -> Result<()> {
+    pub fn is_writable(&self) -> bool {
+        if let Some(s) = self.association.streams.get(&self.stream_identifier) {
+            s.state == RecvSendState::Writable || s.state == RecvSendState::ReadWritable
+        } else {
+            false
+        }
+    }
+
+    /// stop closes the read-direction of the stream.
+    /// Future calls to read are not permitted after calling stop.
+    pub fn stop(&mut self) -> Result<()> {
         let mut reset = false;
         if let Some(s) = self.association.streams.get_mut(&self.stream_identifier) {
-            if !s.closed {
+            if s.state == RecvSendState::Readable || s.state == RecvSendState::ReadWritable {
                 reset = true;
             }
-            s.closed = true;
+            s.state = ((s.state as u8) & 0x2).into();
         }
 
         if reset {
@@ -210,6 +222,15 @@ impl<'a> Stream<'a> {
                 .send_reset_request(self.stream_identifier)?;
         }
 
+        Ok(())
+    }
+
+    /// finish closes the write-direction of the stream.
+    /// Future calls to write are not permitted after calling Close.
+    pub fn finish(&mut self) -> Result<()> {
+        if let Some(s) = self.association.streams.get_mut(&self.stream_identifier) {
+            s.state = ((s.state as u8) & 0x1).into();
+        }
         Ok(())
     }
 
@@ -292,6 +313,31 @@ impl<'a> Stream<'a> {
     }
 }
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum RecvSendState {
+    Closed = 0,
+    Readable = 1,
+    Writable = 2,
+    ReadWritable = 3,
+}
+
+impl From<u8> for RecvSendState {
+    fn from(v: u8) -> Self {
+        match v {
+            1 => RecvSendState::Readable,
+            2 => RecvSendState::Writable,
+            3 => RecvSendState::ReadWritable,
+            _ => RecvSendState::Closed,
+        }
+    }
+}
+
+impl Default for RecvSendState {
+    fn default() -> Self {
+        RecvSendState::Closed
+    }
+}
+
 /// StreamState represents the state of an SCTP stream
 #[derive(Default, Debug)]
 pub struct StreamState {
@@ -301,7 +347,7 @@ pub struct StreamState {
     pub(crate) default_payload_type: PayloadProtocolIdentifier,
     pub(crate) reassembly_queue: ReassemblyQueue,
     pub(crate) sequence_number: u16,
-    pub(crate) closed: bool,
+    pub(crate) state: RecvSendState,
     pub(crate) unordered: bool,
     pub(crate) reliability_type: ReliabilityType,
     pub(crate) reliability_value: u32,
@@ -322,7 +368,7 @@ impl StreamState {
             default_payload_type,
             reassembly_queue: ReassemblyQueue::new(stream_identifier),
             sequence_number: 0,
-            closed: false,
+            state: RecvSendState::ReadWritable,
             unordered: false,
             reliability_type: ReliabilityType::Reliable,
             reliability_value: 0,
@@ -413,9 +459,9 @@ impl StreamState {
 
     /// This method is called by association's read_loop (go-)routine to notify this stream
     /// of the specified amount of outgoing data has been delivered to the peer.
-    pub(crate) fn on_buffer_released(&mut self, n_bytes_released: i64) {
+    pub(crate) fn on_buffer_released(&mut self, n_bytes_released: i64) -> bool {
         if n_bytes_released <= 0 {
-            return;
+            return false;
         }
 
         let from_amount = self.buffered_amount;
@@ -443,10 +489,9 @@ impl StreamState {
         );
 
         if from_amount > buffered_amount_low && new_amount <= buffered_amount_low {
-            /*TODO:let mut handler = self.on_buffered_amount_low.lock().await;
-            if let Some(f) = &mut *handler {
-                f().await;
-            }*/
+            true
+        } else {
+            false
         }
     }
 

@@ -1862,7 +1862,7 @@ fn test_assoc_reset_close_one_way() -> Result<()> {
                 }
 
                 debug!("s0.close");
-                pair.client_stream(client_ch, si)?.close()?; // send reset
+                pair.client_stream(client_ch, si)?.stop()?; // send reset
 
                 pair.step();
             }
@@ -1948,10 +1948,10 @@ fn test_assoc_reset_close_both_ways() -> Result<()> {
         }
 
         if pair.client_stream(client_ch, si).is_ok() {
-            pair.client_stream(client_ch, si)?.close()?; // send reset
+            pair.client_stream(client_ch, si)?.stop()?; // send reset
         }
         if pair.server_stream(server_ch, si).is_ok() {
-            pair.server_stream(server_ch, si)?.close()?; // send reset
+            pair.server_stream(server_ch, si)?.stop()?; // send reset
         }
 
         pair.step();
