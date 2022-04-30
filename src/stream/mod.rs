@@ -79,7 +79,8 @@ pub struct Stream {
     pub(crate) closed: AtomicBool,
     pub(crate) unordered: AtomicBool,
     pub(crate) reliability_type: AtomicU8, //ReliabilityType,
-    pub(crate) reliability_value: AtomicU32,
+    pub(crate) has_reliability_value: AtomicBool,
+    pub(crate) reliability_value: AtomicU16,
     pub(crate) buffered_amount: AtomicUsize,
     pub(crate) buffered_amount_low: AtomicUsize,
     pub(crate) on_buffered_amount_low: Mutex<Option<OnBufferedAmountLowFn>>,
@@ -100,6 +101,7 @@ impl fmt::Debug for Stream {
             .field("closed", &self.closed)
             .field("unordered", &self.unordered)
             .field("reliability_type", &self.reliability_type)
+            .field("has_reliability_value", &self.has_reliability_value)
             .field("reliability_value", &self.reliability_value)
             .field("buffered_amount", &self.buffered_amount)
             .field("buffered_amount_low", &self.buffered_amount_low)
@@ -133,7 +135,8 @@ impl Stream {
             closed: AtomicBool::new(false),
             unordered: AtomicBool::new(false),
             reliability_type: AtomicU8::new(0), //ReliabilityType::Reliable,
-            reliability_value: AtomicU32::new(0),
+            has_reliability_value: AtomicBool::new(false),
+            reliability_value: AtomicU16::new(0),
             buffered_amount: AtomicUsize::new(0),
             buffered_amount_low: AtomicUsize::new(0),
             on_buffered_amount_low: Mutex::new(None),
@@ -153,18 +156,31 @@ impl Stream {
     }
 
     /// set_reliability_params sets reliability parameters for this stream.
-    pub fn set_reliability_params(&self, unordered: bool, rel_type: ReliabilityType, rel_val: u32) {
+    pub fn set_reliability_params(
+        &self,
+        unordered: bool,
+        rel_type: ReliabilityType,
+        rel_val: Option<u16>,
+    ) {
         log::debug!(
             "[{}] reliability params: ordered={} type={} value={}",
             self.name,
             !unordered,
             rel_type,
-            rel_val
+            match rel_val {
+                Some(v) => format!("Some({v})"),
+                None => "None".to_string(),
+            }
         );
         self.unordered.store(unordered, Ordering::SeqCst);
         self.reliability_type
             .store(rel_type as u8, Ordering::SeqCst);
-        self.reliability_value.store(rel_val, Ordering::SeqCst);
+        if let Some(v) = rel_val {
+            self.has_reliability_value.store(true, Ordering::SeqCst);
+            self.reliability_value.store(v, Ordering::SeqCst);
+        } else {
+            self.has_reliability_value.store(false, Ordering::SeqCst);
+        }
     }
 
     /// read reads a packet of len(p) bytes, dropping the Payload Protocol Identifier.

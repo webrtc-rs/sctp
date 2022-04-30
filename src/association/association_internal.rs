@@ -1,10 +1,13 @@
 #[cfg(test)]
 mod association_internal_test;
 
-use super::*;
+use std::sync::atomic::AtomicBool;
 
 use async_trait::async_trait;
-use std::sync::atomic::AtomicBool;
+
+use super::*;
+
+use crate::param::param_forward_tsn_supported::ParamForwardTsnSupported;
 
 #[derive(Default)]
 pub struct AssociationInternal {
@@ -796,6 +799,11 @@ impl AssociationInternal {
                         log::debug!("[{}] use ForwardTSN (on initAck)", self.name);
                         self.use_forward_tsn = true;
                     }
+                }
+            } else {
+                if let Some(_) = param.as_any().downcast_ref::<ParamForwardTsnSupported>() {
+                    log::debug!("[{}] use ForwardTSN (on initAck)", self.name);
+                    self.use_forward_tsn = true;
                 }
             }
         }
@@ -2004,30 +2012,35 @@ impl AssociationInternal {
         if let Some(s) = self.streams.get(&c.stream_identifier) {
             let reliability_type: ReliabilityType =
                 s.reliability_type.load(Ordering::SeqCst).into();
-            let reliability_value = s.reliability_value.load(Ordering::SeqCst);
 
             if reliability_type == ReliabilityType::Rexmit {
-                if c.nsent >= reliability_value {
-                    c.set_abandoned(true);
-                    log::trace!(
-                        "[{}] marked as abandoned: tsn={} ppi={} (remix: {})",
-                        self.name,
-                        c.tsn,
-                        c.payload_type,
-                        c.nsent
-                    );
-                }
-            } else if reliability_type == ReliabilityType::Timed {
-                if let Ok(elapsed) = SystemTime::now().duration_since(c.since) {
-                    if elapsed.as_millis() as u32 >= reliability_value {
+                if s.has_reliability_value.load(Ordering::SeqCst) {
+                    if c.nsent >= s.reliability_value.load(Ordering::SeqCst).into() {
                         c.set_abandoned(true);
                         log::trace!(
-                            "[{}] marked as abandoned: tsn={} ppi={} (timed: {:?})",
+                            "[{}] marked as abandoned: tsn={} ppi={} (remix: {})",
                             self.name,
                             c.tsn,
                             c.payload_type,
-                            elapsed
+                            c.nsent
                         );
+                    }
+                }
+            } else if reliability_type == ReliabilityType::Timed {
+                if s.has_reliability_value.load(Ordering::SeqCst) {
+                    if let Ok(elapsed) = SystemTime::now().duration_since(c.since) {
+                        if elapsed.as_millis() as u32
+                            >= s.reliability_value.load(Ordering::SeqCst).into()
+                        {
+                            c.set_abandoned(true);
+                            log::trace!(
+                                "[{}] marked as abandoned: tsn={} ppi={} (timed: {:?})",
+                                self.name,
+                                c.tsn,
+                                c.payload_type,
+                                elapsed
+                            );
+                        }
                     }
                 }
             }
