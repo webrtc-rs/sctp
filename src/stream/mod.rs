@@ -168,8 +168,7 @@ impl Stream {
     }
 
     /// read reads a packet of len(p) bytes, dropping the Payload Protocol Identifier.
-    /// Returns EOF when the stream is reset or an error if the stream is closed
-    /// otherwise.
+    /// Returns EOF when the stream is reset or an error if `p` is too short.
     pub async fn read(&self, p: &mut [u8]) -> Result<usize> {
         let (n, _) = self.read_sctp(p).await?;
         Ok(n)
@@ -177,27 +176,25 @@ impl Stream {
 
     /// read_sctp reads a packet of len(p) bytes and returns the associated Payload
     /// Protocol Identifier.
-    /// Returns EOF when the stream is reset or an error if the stream is closed
-    /// otherwise.
+    /// Returns EOF when the stream is reset or an error if `p` is too short.
     pub async fn read_sctp(&self, p: &mut [u8]) -> Result<(usize, PayloadProtocolIdentifier)> {
-        while !self.closed.load(Ordering::SeqCst) {
+        loop {
             let result = {
                 let mut reassembly_queue = self.reassembly_queue.lock().await;
                 reassembly_queue.read(p)
             };
 
-            if result.is_ok() {
-                return result;
-            } else if let Err(err) = result {
-                if Error::ErrShortBuffer == err {
-                    return Err(err);
+            match result {
+                Ok(_) => return result,
+                Err(Error::ErrShortBuffer) => return result,
+                Err(_) => 
+                {
+                    // TODO: shouldn't we mark read_notifier as notified in other cases as well?
+                    self.read_notifier.notified().await;
                 }
             }
 
-            self.read_notifier.notified().await;
         }
-
-        Err(Error::ErrStreamClosed)
     }
 
     pub(crate) async fn handle_data(&self, pd: ChunkPayloadData) {
@@ -265,6 +262,10 @@ impl Stream {
 
     /// write_sctp writes len(p) bytes from p to the DTLS connection
     pub async fn write_sctp(&self, p: &Bytes, ppi: PayloadProtocolIdentifier) -> Result<usize> {
+        if self.closed.load(Ordering::SeqCst) {
+            return Err(Error::ErrStreamClosed);
+        }
+
         if p.len() > self.max_message_size.load(Ordering::SeqCst) as usize {
             return Err(Error::ErrOutboundPacketTooLarge);
         }
@@ -342,12 +343,14 @@ impl Stream {
     /// Close closes the write-direction of the stream.
     /// Future calls to write are not permitted after calling Close.
     pub async fn close(&self) -> Result<()> {
-        if !self.closed.load(Ordering::SeqCst) {
-            // Reset the outgoing stream
-            // https://tools.ietf.org/html/rfc6525
-            self.send_reset_request(self.stream_identifier).await?;
+        if self.closed.load(Ordering::SeqCst) {
+            return Ok(());
         }
+
         self.closed.store(true, Ordering::SeqCst);
+        // Reset the outgoing stream
+        // https://tools.ietf.org/html/rfc6525
+        self.send_reset_request(self.stream_identifier).await?;
         self.read_notifier.notify_waiters(); // broadcast regardless
 
         Ok(())
