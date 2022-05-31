@@ -187,13 +187,11 @@ impl Stream {
             match result {
                 Ok(_) => return result,
                 Err(Error::ErrShortBuffer) => return result,
-                Err(_) => 
-                {
+                Err(_) => {
                     // TODO: shouldn't we mark read_notifier as notified in other cases as well?
                     self.read_notifier.notified().await;
                 }
             }
-
         }
     }
 
