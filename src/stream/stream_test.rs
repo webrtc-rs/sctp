@@ -120,8 +120,8 @@ async fn test_stream() -> std::result::Result<(), io::Error> {
     s.read(&mut buf).await?;
     assert_eq!(buf, [0, 1, 2, 3, 4]);
 
-    // close
-    s.close().await?;
+    // shutdown write
+    s.shutdown(Shutdown::Write).await?;
     // write must fail
     assert!(s.write(&Bytes::from("error")).await.is_err());
     // read should continue working
@@ -183,7 +183,7 @@ async fn test_poll_stream() -> std::result::Result<(), io::Error> {
     poll_stream.read(&mut buf).await?;
     assert_eq!(buf, [0, 1, 2, 3, 4]);
 
-    // shutdown
+    // shutdown write
     poll_stream.shutdown().await?;
     // write must fail
     assert!(poll_stream.write(&[1, 2, 3]).await.is_err());

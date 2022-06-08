@@ -99,7 +99,7 @@ async fn main() -> Result<(), Error> {
     signal::ctrl_c().await.expect("failed to listen for event");
     println!("Closing stream and association...");
 
-    stream.close().await?;
+    stream.shutdown(Shutdown::Write).await?;
     a.close().await?;
 
     let _ = done_rx.recv().await;

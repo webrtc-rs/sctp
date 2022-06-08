@@ -19,6 +19,14 @@ use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::{mpsc, Mutex, Notify};
 
+/// Possible values which can be passed to the [`Stream::shutdown`] method.
+#[derive(PartialEq)]
+pub enum Shutdown {
+    Read,
+    Write,
+    Both,
+}
+
 #[derive(Debug, Copy, Clone, PartialEq)]
 #[repr(C)]
 pub enum ReliabilityType {
@@ -76,7 +84,8 @@ pub struct Stream {
     pub(crate) reassembly_queue: Mutex<ReassemblyQueue>,
     pub(crate) sequence_number: AtomicU16,
     pub(crate) read_notifier: Notify,
-    pub(crate) closed: AtomicBool,
+    pub(crate) read_shutdown: AtomicBool,
+    pub(crate) write_shutdown: AtomicBool,
     pub(crate) unordered: AtomicBool,
     pub(crate) reliability_type: AtomicU8, //ReliabilityType,
     pub(crate) reliability_value: AtomicU32,
@@ -97,7 +106,8 @@ impl fmt::Debug for Stream {
             .field("default_payload_type", &self.default_payload_type)
             .field("reassembly_queue", &self.reassembly_queue)
             .field("sequence_number", &self.sequence_number)
-            .field("closed", &self.closed)
+            .field("read_shutdown", &self.read_shutdown)
+            .field("write_shutdown", &self.write_shutdown)
             .field("unordered", &self.unordered)
             .field("reliability_type", &self.reliability_type)
             .field("reliability_value", &self.reliability_value)
@@ -130,7 +140,8 @@ impl Stream {
             reassembly_queue: Mutex::new(ReassemblyQueue::new(stream_identifier)),
             sequence_number: AtomicU16::new(0),
             read_notifier: Notify::new(),
-            closed: AtomicBool::new(false),
+            read_shutdown: AtomicBool::new(false),
+            write_shutdown: AtomicBool::new(false),
             unordered: AtomicBool::new(false),
             reliability_type: AtomicU8::new(0), //ReliabilityType::Reliable,
             reliability_value: AtomicU32::new(0),
@@ -167,28 +178,34 @@ impl Stream {
         self.reliability_value.store(rel_val, Ordering::SeqCst);
     }
 
-    /// read reads a packet of len(p) bytes, dropping the Payload Protocol Identifier.
-    /// Returns EOF when the stream is reset or an error if `p` is too short.
+    /// Reads a packet of len(p) bytes, dropping the Payload Protocol Identifier.
+    /// 
+    /// Returns EOF when the stream is reset or an error if `p` is too short or the reading half of
+    /// the stream is shutdown.
     pub async fn read(&self, p: &mut [u8]) -> Result<usize> {
         let (n, _) = self.read_sctp(p).await?;
         Ok(n)
     }
 
-    /// read_sctp reads a packet of len(p) bytes and returns the associated Payload
-    /// Protocol Identifier.
-    /// Returns EOF when the stream is reset or an error if `p` is too short.
+    /// Reads a packet of len(p) bytes and returns the associated Payload Protocol Identifier.
+    ///
+    /// Returns EOF when the stream is reset or an error if `p` is too short or the reading half of
+    /// the stream is shutdown.
     pub async fn read_sctp(&self, p: &mut [u8]) -> Result<(usize, PayloadProtocolIdentifier)> {
         loop {
+            if self.read_shutdown.load(Ordering::SeqCst) {
+                return Err(Error::ErrStreamClosed);
+            }
+
             let result = {
                 let mut reassembly_queue = self.reassembly_queue.lock().await;
                 reassembly_queue.read(p)
             };
 
             match result {
-                Ok(_) => return result,
-                Err(Error::ErrShortBuffer) => return result,
+                Ok(_) | Err(Error::ErrShortBuffer) => return result,
                 Err(_) => {
-                    // TODO: shouldn't we mark read_notifier as notified in other cases as well?
+                    // wait for the next chunk to become available
                     self.read_notifier.notified().await;
                 }
             }
@@ -252,15 +269,19 @@ impl Stream {
         }
     }
 
-    /// write writes len(p) bytes from p with the default Payload Protocol Identifier
+    /// Writes `p` to the DTLS connection with the default Payload Protocol Identifier.
+    ///
+    /// Returns an error if the write half of this stream is shutdown or `p` is too large.
     pub async fn write(&self, p: &Bytes) -> Result<usize> {
         self.write_sctp(p, self.default_payload_type.load(Ordering::SeqCst).into())
             .await
     }
 
-    /// write_sctp writes len(p) bytes from p to the DTLS connection
+    /// Writes `p` to the DTLS connection with the given Payload Protocol Identifier.
+    ///
+    /// Returns an error if the write half of this stream is shutdown or `p` is too large.
     pub async fn write_sctp(&self, p: &Bytes, ppi: PayloadProtocolIdentifier) -> Result<usize> {
-        if self.closed.load(Ordering::SeqCst) {
+        if self.write_shutdown.load(Ordering::SeqCst) {
             return Err(Error::ErrStreamClosed);
         }
 
@@ -338,18 +359,44 @@ impl Stream {
         chunks
     }
 
-    /// Close closes the write-direction of the stream.
-    /// Future calls to write are not permitted after calling Close.
+    /// Closes both read and write halves of this stream.
+    ///
+    /// Use [`Stream::shutdown`] instead.
+    #[deprecated]
     pub async fn close(&self) -> Result<()> {
-        if self.closed.load(Ordering::SeqCst) {
-            return Ok(());
+        self.shutdown(Shutdown::Both).await
+    }
+
+    /// Shuts down the read, write, or both halves of this stream.
+    ///
+    /// This function will cause all pending and future I/O on the specified portions to return
+    /// immediately with an appropriate value (see the documentation of [`Shutdown`]).
+    ///
+    /// Resets the stream when both halves of this stream are shutdown.
+    pub async fn shutdown(&self, how: Shutdown) -> Result<()> {
+        match how {
+            Shutdown::Write => self.write_shutdown.store(true, Ordering::SeqCst),
+            Shutdown::Read => {
+                if !self.read_shutdown.swap(true, Ordering::SeqCst) {
+                    self.read_notifier.notify_waiters();
+                }
+            }
+            Shutdown::Both => {
+                if !self.read_shutdown.swap(true, Ordering::SeqCst) {
+                    self.read_notifier.notify_waiters();
+                }
+                self.write_shutdown.store(true, Ordering::SeqCst);
+            }
         }
 
-        self.closed.store(true, Ordering::SeqCst);
-        // Reset the outgoing stream
-        // https://tools.ietf.org/html/rfc6525
-        self.send_reset_request(self.stream_identifier).await?;
-        self.read_notifier.notify_waiters(); // broadcast regardless
+        if how == Shutdown::Both
+            || (self.read_shutdown.load(Ordering::SeqCst)
+                && self.write_shutdown.load(Ordering::SeqCst))
+        {
+            // Reset the stream
+            // https://tools.ietf.org/html/rfc6525
+            self.send_reset_request(self.stream_identifier).await?;
+        }
 
         Ok(())
     }
@@ -726,7 +773,7 @@ impl AsyncWrite for PollStream {
             None => {
                 let stream = self.stream.clone();
                 self.shutdown_fut
-                    .get_or_insert(Box::pin(async move { stream.close().await }))
+                    .get_or_insert(Box::pin(async move { stream.shutdown(Shutdown::Write).await }))
             }
         };
 
