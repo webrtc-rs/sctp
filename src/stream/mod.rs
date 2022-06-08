@@ -374,18 +374,17 @@ impl Stream {
     ///
     /// Resets the stream when both halves of this stream are shutdown.
     pub async fn shutdown(&self, how: Shutdown) -> Result<()> {
-        match how {
-            Shutdown::Write => self.write_shutdown.store(true, Ordering::SeqCst),
-            Shutdown::Read => {
-                if !self.read_shutdown.swap(true, Ordering::SeqCst) {
-                    self.read_notifier.notify_waiters();
-                }
-            }
-            Shutdown::Both => {
-                if !self.read_shutdown.swap(true, Ordering::SeqCst) {
-                    self.read_notifier.notify_waiters();
-                }
-                self.write_shutdown.store(true, Ordering::SeqCst);
+        if self.read_shutdown.load(Ordering::SeqCst) && self.write_shutdown.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+
+        if how == Shutdown::Write || how == Shutdown::Both {
+            self.write_shutdown.store(true, Ordering::SeqCst);
+        }
+
+        if how == Shutdown::Read || how == Shutdown::Both {
+            if !self.read_shutdown.swap(true, Ordering::SeqCst) {
+                self.read_notifier.notify_waiters();
             }
         }
 
