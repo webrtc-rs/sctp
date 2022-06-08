@@ -140,8 +140,8 @@ async fn test_stream() -> std::result::Result<(), io::Error> {
 
     // shutdown read
     s.shutdown(Shutdown::Read).await?;
-    // read must fail
-    assert!(s.read(&mut buf).await.is_err());
+    // read must return 0
+    assert_eq!(Ok(0), s.read(&mut buf).await);
 
     Ok(())
 }

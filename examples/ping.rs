@@ -5,6 +5,7 @@ use webrtc_sctp::Error;
 
 use bytes::Bytes;
 use clap::{App, AppSettings, Arg};
+use std::net::Shutdown;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::signal;

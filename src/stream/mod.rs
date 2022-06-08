@@ -12,20 +12,13 @@ use bytes::Bytes;
 use std::fmt;
 use std::future::Future;
 use std::io;
+use std::net::Shutdown;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU8, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::{mpsc, Mutex, Notify};
-
-/// Possible values which can be passed to the [`Stream::shutdown`] method.
-#[derive(PartialEq)]
-pub enum Shutdown {
-    Read,
-    Write,
-    Both,
-}
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 #[repr(C)]
@@ -180,8 +173,8 @@ impl Stream {
 
     /// Reads a packet of len(p) bytes, dropping the Payload Protocol Identifier.
     ///
-    /// Returns EOF when the stream is reset or an error if `p` is too short or the reading half of
-    /// the stream is shutdown.
+    /// Returns EOF when the stream is reset or an error if `p` is too short.
+    /// Returns `0` if the reading half of this stream is shutdown.
     pub async fn read(&self, p: &mut [u8]) -> Result<usize> {
         let (n, _) = self.read_sctp(p).await?;
         Ok(n)
@@ -189,12 +182,12 @@ impl Stream {
 
     /// Reads a packet of len(p) bytes and returns the associated Payload Protocol Identifier.
     ///
-    /// Returns EOF when the stream is reset or an error if `p` is too short or the reading half of
-    /// the stream is shutdown.
+    /// Returns EOF when the stream is reset or an error if `p` is too short.
+    /// Returns `(0, PayloadProtocolIdentifier::Unknown)` if the reading half of this stream is shutdown.
     pub async fn read_sctp(&self, p: &mut [u8]) -> Result<(usize, PayloadProtocolIdentifier)> {
         loop {
             if self.read_shutdown.load(Ordering::SeqCst) {
-                return Err(Error::ErrStreamClosed);
+                return Ok((0, PayloadProtocolIdentifier::Unknown));
             }
 
             let result = {
