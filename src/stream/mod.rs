@@ -179,7 +179,7 @@ impl Stream {
     }
 
     /// Reads a packet of len(p) bytes, dropping the Payload Protocol Identifier.
-    /// 
+    ///
     /// Returns EOF when the stream is reset or an error if `p` is too short or the reading half of
     /// the stream is shutdown.
     pub async fn read(&self, p: &mut [u8]) -> Result<usize> {
@@ -772,8 +772,9 @@ impl AsyncWrite for PollStream {
             Some(fut) => fut,
             None => {
                 let stream = self.stream.clone();
-                self.shutdown_fut
-                    .get_or_insert(Box::pin(async move { stream.shutdown(Shutdown::Write).await }))
+                self.shutdown_fut.get_or_insert(Box::pin(async move {
+                    stream.shutdown(Shutdown::Write).await
+                }))
             }
         };
 
