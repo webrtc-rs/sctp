@@ -5,6 +5,8 @@ use super::*;
 
 use async_trait::async_trait;
 use std::sync::atomic::AtomicBool;
+use crate::param::param_type::ParamType;
+use crate::param::param_unrecognized::ParamUnrecognized;
 
 #[derive(Default)]
 pub struct AssociationInternal {
@@ -712,6 +714,20 @@ impl AssociationInternal {
             ..Default::default()
         };
 
+        let report_unrecognized_params = i.params.iter().filter_map(|param| {
+            if let ParamType::Unknown { param_type } = param.header().typ {
+                let report = ((param_type >> 14) & 0x01) == 1;
+                if report {
+                    let wrapped: Box<dyn Param + Send + Sync> = Box::new(ParamUnrecognized::wrap(param.clone()));
+                    Some(wrapped)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }).collect();
+
         let mut init_ack = ChunkInit {
             is_ack: true,
             initial_tsn: self.my_next_tsn,
@@ -719,6 +735,7 @@ impl AssociationInternal {
             num_inbound_streams: self.my_max_num_inbound_streams,
             initiate_tag: self.my_verification_tag,
             advertised_receiver_window_credit: self.max_receive_buffer_size,
+            params: report_unrecognized_params,
             ..Default::default()
         };
 

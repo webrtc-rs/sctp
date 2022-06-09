@@ -58,7 +58,8 @@ pub enum Error {
     ErrErrorCauseTooSmall,
 
     #[error("unhandled ParamType")]
-    ErrParamTypeUnhandled,
+    ErrParamTypeUnhandled { typ: u16 },
+
 
     #[error("unexpected ParamType")]
     ErrParamTypeUnexpected,
