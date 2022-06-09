@@ -74,7 +74,6 @@ pub(crate) fn build_param(raw_param: &Bytes) -> Result<Box<dyn Param + Send + Sy
         _ => {
             let stop_processing = ((raw_type >> 15) & 0x01) == 0;
             if stop_processing {
-                eprintln!("Stop processing after param type: {:X}", raw_type);
                 Err(Error::ErrParamTypeUnhandled { typ: raw_type })
             } else {
                 Ok(Box::new(ParamUnknown::unmarshal(raw_param)?))
