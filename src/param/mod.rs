@@ -72,8 +72,9 @@ pub(crate) fn build_param(raw_param: &Bytes) -> Result<Box<dyn Param + Send + Sy
         ParamType::OutSsnResetReq => Ok(Box::new(ParamOutgoingResetRequest::unmarshal(raw_param)?)),
         ParamType::ReconfigResp => Ok(Box::new(ParamReconfigResponse::unmarshal(raw_param)?)),
         _ => {
-            let stop_processing = ((raw_type >> 15) & 0x01) == 1;
+            let stop_processing = ((raw_type >> 15) & 0x01) == 0;
             if stop_processing {
+                eprintln!("Stop processing after param type: {:X}", raw_type);
                 Err(Error::ErrParamTypeUnhandled { typ: raw_type })
             } else {
                 Ok(Box::new(ParamUnknown::unmarshal(raw_param)?))

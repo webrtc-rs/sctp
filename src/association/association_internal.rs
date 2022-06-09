@@ -2192,7 +2192,68 @@ impl AssociationInternal {
         } else if let Some(c) = chunk_any.downcast_ref::<ChunkShutdownComplete>() {
             self.handle_shutdown_complete(c).await?
         } else {
-            return Err(Error::ErrChunkTypeUnhandled);
+            /*
+            https://datatracker.ietf.org/doc/html/rfc4960#section-3
+
+            00 -  Stop processing this SCTP packet and discard it, do not
+                  process any further chunks within it.
+
+            01 -  Stop processing this SCTP packet and discard it, do not
+                  process any further chunks within it, and report the
+                  unrecognized chunk in an 'Unrecognized Chunk Type'.
+
+            10 -  Skip this chunk and continue processing.
+
+            11 -  Skip this chunk and continue processing, but report in an
+                  ERROR chunk using the 'Unrecognized Chunk Type' cause of
+                  error.
+            */
+            let handle_code = chunk.header().typ.0 >> 6;
+            match handle_code {
+                0b00 => {
+                    // Stop processing this packet
+                    return Err(Error::ErrChunkTypeUnhandled)
+                }
+                0b01 => {
+                    // stop processing but report the chunk as unrecognized
+                    let err_chunk = ChunkError {
+                        error_causes: vec![ErrorCause {
+                            code: UNRECOGNIZED_CHUNK_TYPE,
+                            raw: chunk.marshal()?,
+                        }]
+                    };
+                    let packet = Packet {
+                        verification_tag: self.peer_verification_tag,
+                        source_port: self.source_port,
+                        destination_port: self.destination_port,
+                        chunks: vec![Box::new(err_chunk)]
+                    };
+                    self.control_queue.push_back(packet);
+                    self.awake_write_loop();
+                    return Err(Error::ErrChunkTypeUnhandled)
+                }
+                0b10 => {
+                    // just ignore
+                    vec![]
+                }
+                0b11 => {
+                    // keep processing but report the chunk as unrecognized
+                    let err_chunk = ChunkError {
+                        error_causes: vec![ErrorCause {
+                            code: UNRECOGNIZED_CHUNK_TYPE,
+                            raw: chunk.marshal()?,
+                        }]
+                    };
+                    let packet = Packet {
+                        verification_tag: self.peer_verification_tag,
+                        source_port: self.source_port,
+                        destination_port: self.destination_port,
+                        chunks: vec![Box::new(err_chunk)]
+                    };
+                    vec![packet]
+                }
+                _ => unreachable!("This can only have 4 values.")
+            }
         };
 
         if !packets.is_empty() {

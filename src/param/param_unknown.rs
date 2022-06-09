@@ -14,7 +14,7 @@ pub struct ParamUnknown {
 
 impl Display for ParamUnknown {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} {:?}", self.header(), self.value)
+        write!(f, "ParamUnknown( {} {:?} )", self.header(), self.value)
     }
 }
 
