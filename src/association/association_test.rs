@@ -1984,7 +1984,7 @@ async fn test_assoc_reset_close_both_ways() -> Result<()> {
         loop {
             log::debug!("s.read_sctp begin");
             match s0.read_sctp(&mut buf).await {
-                Ok((0, _)) => {
+                Ok((0, PayloadProtocolIdentifier::Unknown)) => {
                     log::debug!("s0.read_sctp EOF");
                     let _ = done_ch_tx0.send(Some(Error::ErrEof)).await;
                     break;
