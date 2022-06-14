@@ -1819,8 +1819,8 @@ async fn test_assoc_reset_close_one_way() -> Result<()> {
         assert_eq!(MSG.len(), a.buffered_amount(), "incorrect bufferedAmount");
     }
 
-    log::debug!("s0.close");
-    s0.close().await?; // send reset
+    log::debug!("s0.shutdown");
+    s0.shutdown(Shutdown::Both).await?; // send reset
 
     let (done_ch_tx, mut done_ch_rx) = mpsc::channel(1);
     let mut buf = vec![0u8; 32];
@@ -1829,6 +1829,10 @@ async fn test_assoc_reset_close_one_way() -> Result<()> {
         loop {
             log::debug!("s1.read_sctp begin");
             match s1.read_sctp(&mut buf).await {
+                Ok((0, 0)) => {
+                    log::debug!("s1.read_sctp EOF");
+                    break;
+                }
                 Ok((n, ppi)) => {
                     log::debug!("s1.read_sctp done with {:?}", &buf[..n]);
                     assert_eq!(ppi, PayloadProtocolIdentifier::Binary, "unexpected ppi");
@@ -1914,8 +1918,8 @@ async fn test_assoc_reset_close_both_ways() -> Result<()> {
         assert_eq!(MSG.len(), a.buffered_amount(), "incorrect bufferedAmount");
     }
 
-    log::debug!("s0.close");
-    s0.close().await?; // send reset
+    log::debug!("s0.shutdown");
+    s0.shutdown(Shutdown::Both).await?; // send reset
 
     let (done_ch_tx, mut done_ch_rx) = mpsc::channel(1);
     let done_ch_tx = Arc::new(done_ch_tx);
@@ -1927,6 +1931,10 @@ async fn test_assoc_reset_close_both_ways() -> Result<()> {
         loop {
             log::debug!("s1.read_sctp begin");
             match ss1.read_sctp(&mut buf).await {
+                Ok((0, 0)) => {
+                    log::debug!("s1.read_sctp EOF");
+                    break;
+                }
                 Ok((n, ppi)) => {
                     log::debug!("s1.read_sctp done with {:?}", &buf[..n]);
                     assert_eq!(ppi, PayloadProtocolIdentifier::Binary, "unexpected ppi");
@@ -1964,8 +1972,8 @@ async fn test_assoc_reset_close_both_ways() -> Result<()> {
         }
     }
 
-    log::debug!("s1.close");
-    s1.close().await?; // send reset
+    log::debug!("s1.shutdown");
+    s1.shutdown(Shutdown::Both).await?; // send reset
 
     let done_ch_tx0 = Arc::clone(&done_ch_tx);
     tokio::spawn(async move {
