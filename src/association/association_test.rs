@@ -1016,6 +1016,7 @@ async fn test_assoc_unreliable_rexmit_unordered_no_fragment() -> Result<()> {
 
 //use std::io::Write;
 
+#[cfg(not(target_os = "macos"))]
 #[tokio::test]
 async fn test_assoc_unreliable_rexmit_unordered_fragment() -> Result<()> {
     /*env_logger::Builder::new()
