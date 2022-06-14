@@ -1832,6 +1832,7 @@ async fn test_assoc_reset_close_one_way() -> Result<()> {
             match s1.read_sctp(&mut buf).await {
                 Ok((0, PayloadProtocolIdentifier::Unknown)) => {
                     log::debug!("s1.read_sctp EOF");
+                    let _ = done_ch_tx.send(Some(Error::ErrEof)).await;
                     break;
                 }
                 Ok((n, ppi)) => {
@@ -1934,6 +1935,7 @@ async fn test_assoc_reset_close_both_ways() -> Result<()> {
             match ss1.read_sctp(&mut buf).await {
                 Ok((0, PayloadProtocolIdentifier::Unknown)) => {
                     log::debug!("s1.read_sctp EOF");
+                    let _ = done_ch_tx1.send(Some(Error::ErrEof)).await;
                     break;
                 }
                 Ok((n, ppi)) => {
@@ -1982,6 +1984,11 @@ async fn test_assoc_reset_close_both_ways() -> Result<()> {
         loop {
             log::debug!("s.read_sctp begin");
             match s0.read_sctp(&mut buf).await {
+                Ok((0, _)) => {
+                    log::debug!("s0.read_sctp EOF");
+                    let _ = done_ch_tx0.send(Some(Error::ErrEof)).await;
+                    break;
+                }
                 Ok(_) => {
                     assert!(false, "must be error");
                 }
