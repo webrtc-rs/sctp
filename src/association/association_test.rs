@@ -4,6 +4,7 @@ use crate::stream::*;
 use crate::chunk::chunk_selective_ack::GapAckBlock;
 use async_trait::async_trait;
 use std::io;
+use std::net::Shutdown;
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::time::Duration;
@@ -1829,7 +1830,7 @@ async fn test_assoc_reset_close_one_way() -> Result<()> {
         loop {
             log::debug!("s1.read_sctp begin");
             match s1.read_sctp(&mut buf).await {
-                Ok((0, 0)) => {
+                Ok((0, PayloadProtocolIdentifier::Unknown)) => {
                     log::debug!("s1.read_sctp EOF");
                     break;
                 }
@@ -1931,7 +1932,7 @@ async fn test_assoc_reset_close_both_ways() -> Result<()> {
         loop {
             log::debug!("s1.read_sctp begin");
             match ss1.read_sctp(&mut buf).await {
-                Ok((0, 0)) => {
+                Ok((0, PayloadProtocolIdentifier::Unknown)) => {
                     log::debug!("s1.read_sctp EOF");
                     break;
                 }
