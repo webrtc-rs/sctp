@@ -714,10 +714,10 @@ impl AssociationInternal {
             ..Default::default()
         };
 
-        let report_unrecognized_params = i.params.iter().filter_map(|param| {
+        let unrecognized_params_from_init = i.params.iter().filter_map(|param| {
             if let ParamType::Unknown { param_type } = param.header().typ {
-                let report = ((param_type >> 14) & 0x01) == 1;
-                if report {
+                let needs_to_be_reported = ((param_type >> 14) & 0x01) == 1;
+                if needs_to_be_reported {
                     let wrapped: Box<dyn Param + Send + Sync> = Box::new(ParamUnrecognized::wrap(param.clone()));
                     Some(wrapped)
                 } else {
@@ -735,7 +735,7 @@ impl AssociationInternal {
             num_inbound_streams: self.my_max_num_inbound_streams,
             initiate_tag: self.my_verification_tag,
             advertised_receiver_window_credit: self.max_receive_buffer_size,
-            params: report_unrecognized_params,
+            params: unrecognized_params_from_init,
             ..Default::default()
         };
 
