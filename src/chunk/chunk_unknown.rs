@@ -44,7 +44,7 @@ impl Chunk for ChunkUnknown {
         let len = header.value_length as usize;
         Ok(Self {
             hdr: header,
-            value: raw.slice(CHUNK_HEADER_SIZE..).slice(..len),
+            value: raw.slice(CHUNK_HEADER_SIZE..CHUNK_HEADER_SIZE + len),
         })
     }
 }
