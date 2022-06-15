@@ -12,7 +12,7 @@ pub struct ChunkUnknown {
 
 impl Display for ChunkUnknown {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "ChunkUnknown( {} {:?} )", self.header(), self.value)
+        write!(f, "ChunkUnknown( {} {:?} )", self.hdr, self.value)
     }
 }
 
