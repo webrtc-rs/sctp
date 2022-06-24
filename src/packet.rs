@@ -18,10 +18,10 @@ use crate::chunk::chunk_type::*;
 use crate::error::{Error, Result};
 use crate::util::*;
 
+use crate::chunk::chunk_unknown::ChunkUnknown;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use crc::{Crc, CRC_32_ISCSI};
 use std::fmt;
-use crate::chunk::chunk_unknown::ChunkUnknown;
 
 ///Packet represents an SCTP packet, defined in https://tools.ietf.org/html/rfc4960#section-3
 ///An SCTP packet is composed of a common header and chunks.  A chunk
@@ -124,7 +124,9 @@ impl Packet {
                 CT_ERROR => Box::new(ChunkError::unmarshal(&raw.slice(offset..))?),
                 CT_SHUTDOWN => Box::new(ChunkShutdown::unmarshal(&raw.slice(offset..))?),
                 CT_SHUTDOWN_ACK => Box::new(ChunkShutdownAck::unmarshal(&raw.slice(offset..))?),
-                CT_SHUTDOWN_COMPLETE => Box::new(ChunkShutdownComplete::unmarshal(&raw.slice(offset..))?),
+                CT_SHUTDOWN_COMPLETE => {
+                    Box::new(ChunkShutdownComplete::unmarshal(&raw.slice(offset..))?)
+                }
                 _ => Box::new(ChunkUnknown::unmarshal(&raw.slice(offset..))?),
             };
 

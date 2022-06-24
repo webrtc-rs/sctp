@@ -3,10 +3,10 @@ mod association_internal_test;
 
 use super::*;
 
-use async_trait::async_trait;
-use std::sync::atomic::AtomicBool;
 use crate::param::param_type::ParamType;
 use crate::param::param_unrecognized::ParamUnrecognized;
+use async_trait::async_trait;
+use std::sync::atomic::AtomicBool;
 
 #[derive(Default)]
 pub struct AssociationInternal {
@@ -714,19 +714,24 @@ impl AssociationInternal {
             ..Default::default()
         };
 
-        let unrecognized_params_from_init = i.params.iter().filter_map(|param| {
-            if let ParamType::Unknown { param_type } = param.header().typ {
-                let needs_to_be_reported = ((param_type >> 14) & 0x01) == 1;
-                if needs_to_be_reported {
-                    let wrapped: Box<dyn Param + Send + Sync> = Box::new(ParamUnrecognized::wrap(param.clone()));
-                    Some(wrapped)
+        let unrecognized_params_from_init = i
+            .params
+            .iter()
+            .filter_map(|param| {
+                if let ParamType::Unknown { param_type } = param.header().typ {
+                    let needs_to_be_reported = ((param_type >> 14) & 0x01) == 1;
+                    if needs_to_be_reported {
+                        let wrapped: Box<dyn Param + Send + Sync> =
+                            Box::new(ParamUnrecognized::wrap(param.clone()));
+                        Some(wrapped)
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 }
-            } else {
-                None
-            }
-        }).collect();
+            })
+            .collect();
 
         let mut init_ack = ChunkInit {
             is_ack: true,
@@ -2212,7 +2217,7 @@ impl AssociationInternal {
             match handle_code {
                 0b00 => {
                     // Stop processing this packet
-                    return Err(Error::ErrChunkTypeUnhandled)
+                    return Err(Error::ErrChunkTypeUnhandled);
                 }
                 0b01 => {
                     // stop processing but report the chunk as unrecognized
@@ -2220,17 +2225,17 @@ impl AssociationInternal {
                         error_causes: vec![ErrorCause {
                             code: UNRECOGNIZED_CHUNK_TYPE,
                             raw: chunk.marshal()?,
-                        }]
+                        }],
                     };
                     let packet = Packet {
                         verification_tag: self.peer_verification_tag,
                         source_port: self.source_port,
                         destination_port: self.destination_port,
-                        chunks: vec![Box::new(err_chunk)]
+                        chunks: vec![Box::new(err_chunk)],
                     };
                     self.control_queue.push_back(packet);
                     self.awake_write_loop();
-                    return Err(Error::ErrChunkTypeUnhandled)
+                    return Err(Error::ErrChunkTypeUnhandled);
                 }
                 0b10 => {
                     // just ignore
@@ -2242,17 +2247,17 @@ impl AssociationInternal {
                         error_causes: vec![ErrorCause {
                             code: UNRECOGNIZED_CHUNK_TYPE,
                             raw: chunk.marshal()?,
-                        }]
+                        }],
                     };
                     let packet = Packet {
                         verification_tag: self.peer_verification_tag,
                         source_port: self.source_port,
                         destination_port: self.destination_port,
-                        chunks: vec![Box::new(err_chunk)]
+                        chunks: vec![Box::new(err_chunk)],
                     };
                     vec![packet]
                 }
-                _ => unreachable!("This can only have 4 values.")
+                _ => unreachable!("This can only have 4 values."),
             }
         };
 

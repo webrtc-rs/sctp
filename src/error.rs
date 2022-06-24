@@ -60,7 +60,6 @@ pub enum Error {
     #[error("unhandled ParamType `{typ}`")]
     ErrParamTypeUnhandled { typ: u16 },
 
-
     #[error("unexpected ParamType")]
     ErrParamTypeUnexpected,
 

@@ -1,11 +1,15 @@
+use crate::param::param_header::ParamHeader;
+use crate::param::param_header::PARAM_HEADER_LENGTH;
+use crate::param::param_type::ParamType;
+use crate::param::Param;
+use bytes::{Bytes, BytesMut};
 use std::any::Any;
 use std::fmt::{Debug, Display, Formatter};
-use bytes::{Bytes, BytesMut};
-use crate::param::Param;
-use crate::param::param_header::ParamHeader;
-use crate::param::param_type::ParamType;
-use crate::param::param_header::PARAM_HEADER_LENGTH;
 
+/// This type is meant to represent ANY parameter for un/remarshaling purposes, where we do not have a more specific type for it.
+/// This means we do not really understand the semantics of the param but can represent it.
+///
+/// This is useful for usage in e.g.`ParamUnrecognized` where we want to report some unrecognized params back to the sender.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ParamUnknown {
     typ: u16,
@@ -21,7 +25,9 @@ impl Display for ParamUnknown {
 impl Param for ParamUnknown {
     fn header(&self) -> ParamHeader {
         ParamHeader {
-            typ: ParamType::Unknown { param_type: self.typ },
+            typ: ParamType::Unknown {
+                param_type: self.typ,
+            },
             value_length: self.value.len() as u16,
         }
     }
@@ -30,7 +36,10 @@ impl Param for ParamUnknown {
         &*self
     }
 
-    fn unmarshal(raw: &Bytes) -> crate::error::Result<Self> where Self: Sized {
+    fn unmarshal(raw: &Bytes) -> crate::error::Result<Self>
+    where
+        Self: Sized,
+    {
         let header = ParamHeader::unmarshal(raw)?;
         let value = raw.slice(PARAM_HEADER_LENGTH..PARAM_HEADER_LENGTH + header.value_length());
         Ok(Self {

@@ -11,9 +11,9 @@ pub(crate) mod param_reconfig_response;
 pub(crate) mod param_requested_hmac_algorithm;
 pub(crate) mod param_state_cookie;
 pub(crate) mod param_supported_extensions;
+pub(crate) mod param_type;
 pub(crate) mod param_unknown;
 pub(crate) mod param_unrecognized;
-pub(crate) mod param_type;
 
 use crate::error::{Error, Result};
 use crate::param::{
@@ -27,15 +27,15 @@ use crate::param::{
 use param_header::*;
 use param_type::*;
 
+use crate::param::param_unknown::ParamUnknown;
 use bytes::{Buf, Bytes, BytesMut};
 use std::{any::Any, fmt};
-use crate::param::param_unknown::ParamUnknown;
 
 pub(crate) trait Param: fmt::Display + fmt::Debug {
     fn header(&self) -> ParamHeader;
     fn unmarshal(raw: &Bytes) -> Result<Self>
-        where
-            Self: Sized;
+    where
+        Self: Sized;
     fn marshal_to(&self, buf: &mut BytesMut) -> Result<usize>;
     fn value_length(&self) -> usize;
     fn clone_to(&self) -> Box<dyn Param + Send + Sync>;

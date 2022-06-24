@@ -1,11 +1,13 @@
-use std::fmt::{Debug, Display, Formatter};
-use crate::param::{build_param, Param};
 use crate::param::param_header::PARAM_HEADER_LENGTH;
 use crate::param::param_type::ParamType;
 use crate::param::ParamHeader;
-use std::any::Any;
+use crate::param::{build_param, Param};
 use bytes::{Bytes, BytesMut};
+use std::any::Any;
+use std::fmt::{Debug, Display, Formatter};
 
+/// This is the parameter type used to report unrecognized parameters in e.g. init chunks back to the sender in the init ack.
+/// The contained param is likely to be a `ParamUnknown` but might be something more specific.
 #[derive(Clone, Debug)]
 pub struct ParamUnrecognized {
     param: Box<dyn Param + Send + Sync>,
@@ -36,7 +38,10 @@ impl Param for ParamUnrecognized {
         &*self
     }
 
-    fn unmarshal(raw: &Bytes) -> crate::error::Result<Self> where Self: Sized {
+    fn unmarshal(raw: &Bytes) -> crate::error::Result<Self>
+    where
+        Self: Sized,
+    {
         let header = ParamHeader::unmarshal(raw)?;
         let raw_param = raw.slice(PARAM_HEADER_LENGTH..PARAM_HEADER_LENGTH + header.value_length());
         let param = build_param(&raw_param)?;

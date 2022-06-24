@@ -56,7 +56,9 @@ pub(crate) enum ParamType {
     /// Success Indication (0xC005) [RFCRFC5061]
     AdaptLayerInd,
     /// Adaptation Layer Indication (0xC006) [RFCRFC5061]
-    Unknown { param_type: u16 },
+    Unknown {
+        param_type: u16,
+    },
 }
 
 impl fmt::Display for ParamType {
@@ -123,7 +125,9 @@ impl From<u16> for ParamType {
             49156 => ParamType::SetPriAddr,
             49157 => ParamType::SuccessInd,
             49158 => ParamType::AdaptLayerInd,
-            unknown => ParamType::Unknown { param_type: unknown },
+            unknown => ParamType::Unknown {
+                param_type: unknown,
+            },
         }
     }
 }

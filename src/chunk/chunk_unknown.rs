@@ -1,8 +1,8 @@
+use crate::chunk::chunk_header::{ChunkHeader, CHUNK_HEADER_SIZE};
+use crate::chunk::Chunk;
+use bytes::{Bytes, BytesMut};
 use std::any::Any;
 use std::fmt::{Debug, Display, Formatter};
-use bytes::{Bytes, BytesMut};
-use crate::chunk::Chunk;
-use crate::chunk::chunk_header::{CHUNK_HEADER_SIZE, ChunkHeader};
 
 #[derive(Clone, Debug)]
 pub struct ChunkUnknown {
@@ -39,7 +39,10 @@ impl Chunk for ChunkUnknown {
         Ok(buf.len())
     }
 
-    fn unmarshal(raw: &Bytes) -> crate::error::Result<Self> where Self: Sized {
+    fn unmarshal(raw: &Bytes) -> crate::error::Result<Self>
+    where
+        Self: Sized,
+    {
         let header = ChunkHeader::unmarshal(raw)?;
         let len = header.value_length as usize;
         Ok(Self {
