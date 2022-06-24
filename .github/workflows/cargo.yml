@@ -3,6 +3,8 @@ name: cargo
 on:
   push:
     branches: [ main, proto ]
+  pull_request:
+    branches: [ main, proto ]
 
 env:
   CARGO_TERM_COLOR: always
@@ -35,6 +37,33 @@ jobs:
       - uses: actions-rs/cargo@v1
         with:
           command: test
+
+  rustfmt_and_clippy:
+    name: Check rustfmt style and run clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          profile: minimal
+          components: clippy, rustfmt
+          override: true
+      - name: Cache cargo registry
+        uses: actions/cache@v3
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+      - name: Run clippy
+        uses: actions-rs/cargo@v1
+        with:
+          command: clippy
+          args: -- -D warnings
+      - name: Check formating
+        uses: actions-rs/cargo@v1
+        with:
+          command: fmt
+          args: --all -- --check
 
   minimal_versions:
     name: Compile and test with minimal versions
