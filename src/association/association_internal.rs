@@ -714,6 +714,8 @@ impl AssociationInternal {
             ..Default::default()
         };
 
+        // According to RFC https://datatracker.ietf.org/doc/html/rfc4960#section-3.2.2
+        // We report unknown parameters with a paramtype with bit 14 set as unrecognized
         let unrecognized_params_from_init = i
             .params
             .iter()
