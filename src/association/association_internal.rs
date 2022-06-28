@@ -743,7 +743,6 @@ impl AssociationInternal {
             initiate_tag: self.my_verification_tag,
             advertised_receiver_window_credit: self.max_receive_buffer_size,
             params: unrecognized_params_from_init,
-            ..Default::default()
         };
 
         if self.my_cookie.is_none() {
