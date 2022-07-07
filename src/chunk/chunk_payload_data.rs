@@ -191,7 +191,7 @@ impl Chunk for ChunkPayloadData {
         let ending_fragment = (header.flags & PAYLOAD_DATA_ENDING_FRAGMENT_BITMASK) != 0;
 
         // validity of value_length is checked in ChunkHeader::unmarshal
-        if (header.value_length as usize) < PAYLOAD_DATA_HEADER_SIZE {
+        if header.value_length() < PAYLOAD_DATA_HEADER_SIZE {
             return Err(Error::ErrChunkPayloadSmall);
         }
 
