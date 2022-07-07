@@ -75,6 +75,11 @@ impl Param for ParamOutgoingResetRequest {
             return Err(Error::ErrSsnResetRequestParamTooShort);
         }
 
+        if (header.value_length as usize) < PARAM_OUTGOING_RESET_REQUEST_STREAM_IDENTIFIERS_OFFSET
+        {
+            return Err(Error::ErrSsnResetRequestParamTooShort);
+        }
+
         let reader =
             &mut raw.slice(PARAM_HEADER_LENGTH..PARAM_HEADER_LENGTH + header.value_length());
         let reconfig_request_sequence_number = reader.get_u32();

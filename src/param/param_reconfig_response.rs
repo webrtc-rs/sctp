@@ -106,6 +106,9 @@ impl Param for ParamReconfigResponse {
         if raw.len() < 8 + PARAM_HEADER_LENGTH {
             return Err(Error::ErrReconfigRespParamTooShort);
         }
+        if header.value_length < 8 {
+            return Err(Error::ErrReconfigRespParamTooShort);
+        }
 
         let reader =
             &mut raw.slice(PARAM_HEADER_LENGTH..PARAM_HEADER_LENGTH + header.value_length());

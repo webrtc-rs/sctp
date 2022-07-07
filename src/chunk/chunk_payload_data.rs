@@ -193,6 +193,9 @@ impl Chunk for ChunkPayloadData {
         if raw.len() < PAYLOAD_DATA_HEADER_SIZE {
             return Err(Error::ErrChunkPayloadSmall);
         }
+        if (header.value_length as usize) < PAYLOAD_DATA_HEADER_SIZE {
+            return Err(Error::ErrChunkPayloadSmall);
+        }
 
         let reader = &mut raw.slice(CHUNK_HEADER_SIZE..CHUNK_HEADER_SIZE + header.value_length());
 

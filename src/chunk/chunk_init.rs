@@ -134,6 +134,8 @@ impl Chunk for ChunkInit {
             return Err(Error::ErrChunkTypeNotTypeInit);
         } else if raw.len() < CHUNK_HEADER_SIZE + INIT_CHUNK_MIN_LENGTH {
             return Err(Error::ErrChunkValueNotLongEnough);
+        } else if (header.value_length as usize) < INIT_CHUNK_MIN_LENGTH {
+            return Err(Error::ErrChunkValueNotLongEnough);
         }
 
         // The Chunk Flags field in INIT is reserved, and all bits in it should
