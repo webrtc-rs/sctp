@@ -132,9 +132,9 @@ impl Chunk for ChunkInit {
 
         if !(header.typ == CT_INIT || header.typ == CT_INIT_ACK) {
             return Err(Error::ErrChunkTypeNotTypeInit);
-        } else if raw.len() < CHUNK_HEADER_SIZE + INIT_CHUNK_MIN_LENGTH {
-            return Err(Error::ErrChunkValueNotLongEnough);
-        } else if (header.value_length as usize) < INIT_CHUNK_MIN_LENGTH {
+        } else if raw.len() < CHUNK_HEADER_SIZE + INIT_CHUNK_MIN_LENGTH
+            || (header.value_length as usize) < INIT_CHUNK_MIN_LENGTH
+        {
             return Err(Error::ErrChunkValueNotLongEnough);
         }
 

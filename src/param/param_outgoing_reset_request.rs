@@ -75,8 +75,7 @@ impl Param for ParamOutgoingResetRequest {
             return Err(Error::ErrSsnResetRequestParamTooShort);
         }
 
-        if (header.value_length as usize) < PARAM_OUTGOING_RESET_REQUEST_STREAM_IDENTIFIERS_OFFSET
-        {
+        if (header.value_length as usize) < PARAM_OUTGOING_RESET_REQUEST_STREAM_IDENTIFIERS_OFFSET {
             return Err(Error::ErrSsnResetRequestParamTooShort);
         }
 
