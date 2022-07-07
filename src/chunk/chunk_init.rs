@@ -83,7 +83,7 @@ impl Clone for ChunkInit {
             num_outbound_streams: self.num_outbound_streams,
             num_inbound_streams: self.num_inbound_streams,
             initial_tsn: self.initial_tsn,
-            params: self.params.iter().cloned().collect(),
+            params: self.params.to_vec(),
         }
     }
 }
