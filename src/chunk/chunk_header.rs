@@ -56,6 +56,10 @@ impl Chunk for ChunkHeader {
 
         // Length includes Chunk header
         let value_length = length as isize - CHUNK_HEADER_SIZE as isize;
+        if (value_length as usize) > raw.len() - CHUNK_HEADER_SIZE {
+            return Err(Error::ErrChunkHeaderInvalidLength);
+        }
+
         let length_after_value = raw.len() as isize - length as isize;
         if length_after_value < 0 {
             return Err(Error::ErrChunkHeaderNotEnoughSpace);
