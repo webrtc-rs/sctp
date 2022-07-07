@@ -1,3 +1,14 @@
+//! # What are these tests?
+//!
+//! These tests ensure that regressions in the unmarshaling code are caught.
+//!
+//! They check all artifacts of the fuzzer that crashed this lib, and make sure they no longer crash the library.
+//!
+//! The content of the files is mostly garbage, but it triggers "intersting" behaviour in the unmarshaling code.
+//! So if your change fails one of these tests you probably made an error somwhere.
+//!
+//! Sadly these tests cannot really tell you where your error is specifically outside the standard backtrace rust will provide to you. Sorry.
+
 use bytes::Bytes;
 
 #[test]
