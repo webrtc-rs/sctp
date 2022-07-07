@@ -90,7 +90,8 @@ impl Chunk for ChunkSelectiveAck {
             return Err(Error::ErrChunkTypeNotSack);
         }
 
-        if raw.len() < CHUNK_HEADER_SIZE + SELECTIVE_ACK_HEADER_SIZE {
+        // validity of value_length is checked in ChunkHeader::unmarshal
+        if (header.value_length as usize) < SELECTIVE_ACK_HEADER_SIZE {
             return Err(Error::ErrSackSizeNotLargeEnoughInfo);
         }
 
