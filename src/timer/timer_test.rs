@@ -161,6 +161,10 @@ mod test_rto_manager {
 mod test_rtx_timer {
     use super::*;
     use crate::association::RtxTimerId;
+    use crate::error::Result;
+
+    use std::time::SystemTime;
+    use tokio::sync::mpsc;
 
     struct TestTimerObserver {
         ncbs: Arc<AtomicU32>,
