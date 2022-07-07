@@ -112,6 +112,12 @@ impl Chunk for ChunkSelectiveAck {
             return Err(Error::ErrSackSizeNotLargeEnoughInfo);
         }
 
+        if (header.value_length as usize)
+            < SELECTIVE_ACK_HEADER_SIZE + (4 * gap_ack_blocks_len + 4 * duplicate_tsn_len)
+        {
+            return Err(Error::ErrSackSizeNotLargeEnoughInfo);
+        }
+
         let mut gap_ack_blocks = vec![];
         let mut duplicate_tsn = vec![];
         for _ in 0..gap_ack_blocks_len {
